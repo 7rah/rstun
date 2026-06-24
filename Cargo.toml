@@ -35,6 +35,7 @@ rustls-pemfile = "2.2"
 bytes = "1"
 backon = "1.5"
 dashmap = "6"
+zstd = "0.13"
 ctrlc = "3.4"
 
 [dev-dependencies]
@@ -52,5 +53,5 @@ android_logger = "0.15"
 [profile.release]
 opt-level = "z"
 strip = true
-lto = "fat"
+lto = "thin"
 panic = "abort"

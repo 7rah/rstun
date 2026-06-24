@@ -7,7 +7,8 @@ use crate::udp::{udp_server::UdpServer, udp_tunnel::UdpTunnel};
 use crate::{
     SUPPORTED_CIPHER_SUITES, ServerConfig, TcpServer, TcpTunnelInInfo, TcpTunnelOutInfo,
     TimeoutConfig, Tunnel, TunnelConfig, TunnelMode, TunnelType, UdpTunnelInInfo, UdpTunnelOutInfo,
-    UpstreamType, build_quic_transport_config, pem_util,
+    UpstreamType, ZstdConfig, build_quic_transport_config, pem_util,
+    util::stream_util::ZstdStats,
 };
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
@@ -167,6 +168,8 @@ impl Server {
                                 &info.conn,
                                 Some(info.upstream_addr),
                                 timeouts.tcp_timeout_ms,
+                                ZstdConfig::default(),
+                                Arc::new(ZstdStats::new()),
                             )
                             .await
                             .ok();
@@ -208,6 +211,8 @@ impl Server {
                                 tcp_receiver,
                                 &mut None,
                                 timeouts.tcp_timeout_ms,
+                                ZstdConfig::default(),
+                                Arc::new(ZstdStats::new()),
                             )
                             .await
                             .ok();
@@ -251,6 +256,8 @@ impl Server {
                                 config.default_tcp_upstream,
                                 timeouts.tcp_timeout_ms,
                                 config.channel_tcp_connector.clone(),
+                                ZstdConfig::default(),
+                                Arc::new(ZstdStats::new()),
                             )
                             .await
                             .ok();

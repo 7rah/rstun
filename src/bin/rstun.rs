@@ -39,6 +39,11 @@ fn run_client(args: ClientArgs) {
         args.heartbeat_interval_ms,
         args.heartbeat_timeout_ms,
         args.hop_interval_ms,
+        args.zstd,
+        args.zstd_level,
+        args.zstd_window_log,
+        args.zstd_flush_size,
+        args.zstd_flush_interval_ms,
     )
     .map_err(|e| {
         error!("{e}");
@@ -274,6 +279,26 @@ struct ClientArgs {
         hide_default_value = true
     )]
     sni_names: String,
+
+    /// Enable zstd compression for tunnel data
+    #[arg(long, default_value_t = false)]
+    zstd: bool,
+
+    /// zstd compression level (1-22, default 3)
+    #[arg(long, default_value_t = 3)]
+    zstd_level: i32,
+
+    /// zstd window log (default 21 = 2MB)
+    #[arg(long, default_value_t = 21)]
+    zstd_window_log: u32,
+
+    /// zstd flush size threshold in bytes (default 4096)
+    #[arg(long, default_value_t = 4096)]
+    zstd_flush_size: usize,
+
+    /// zstd max flush interval in milliseconds (default 100)
+    #[arg(long, default_value_t = 100)]
+    zstd_flush_interval_ms: u64,
 
     /// Log level
     #[arg(short = 'l', long, default_value_t = String::from("I"),

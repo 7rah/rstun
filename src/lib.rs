@@ -198,6 +198,33 @@ pub struct TimeoutConfig {
     pub udp_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ZstdConfig {
+    pub enabled: bool,
+    pub level: i32,
+    pub window_log: u32,
+    pub flush_size: usize,
+    pub flush_interval_ms: u64,
+}
+
+impl ZstdConfig {
+    pub fn new(
+        enabled: bool,
+        level: i32,
+        window_log: u32,
+        flush_size: usize,
+        flush_interval_ms: u64,
+    ) -> Self {
+        Self {
+            enabled,
+            level: if level == 0 { 3 } else { level },
+            window_log: if window_log == 0 { 21 } else { window_log },
+            flush_size: if flush_size == 0 { 4096 } else { flush_size },
+            flush_interval_ms: if flush_interval_ms == 0 { 100 } else { flush_interval_ms },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum TunnelType {
     TcpOut(TcpTunnelOutInfo),
@@ -288,6 +315,7 @@ pub struct ClientConfig {
     pub quic_send_window: u64,
     /// Custom SNI hostnames presented on the wire (round-robin). Empty = disabled.
     pub sni_names: Vec<String>,
+    pub zstd_config: ZstdConfig,
 }
 
 #[derive(Clone)]
@@ -468,6 +496,11 @@ impl ClientConfig {
         mut heartbeat_interval_ms: u64,
         mut heartbeat_timeout_ms: u64,
         mut hop_interval_ms: u64,
+        zstd_enabled: bool,
+        zstd_level: i32,
+        zstd_window_log: u32,
+        zstd_flush_size: usize,
+        zstd_flush_interval_ms: u64,
     ) -> Result<ClientConfig> {
         if tcp_mappings.is_empty() && udp_mappings.is_empty() {
             log_and_bail!("must specify either --tcp-mappings or --udp-mappings, or both");
@@ -527,6 +560,13 @@ impl ClientConfig {
             dot_servers: dot.split(',').map(|s| s.to_string()).collect(),
             dns_servers: dns.split(',').map(|s| s.to_string()).collect(),
             sni_names: parse_sni_names(sni)?,
+            zstd_config: ZstdConfig::new(
+                zstd_enabled,
+                zstd_level,
+                zstd_window_log,
+                zstd_flush_size,
+                zstd_flush_interval_ms,
+            ),
             ..ClientConfig::default()
         };
 
@@ -710,6 +750,11 @@ pub mod android {
             0, // heartbeat_interval_ms - use default
             0, // heartbeat_timeout_ms - use default
             jhopTimeoutMs as u64,
+            false, // zstd disabled by default on Android
+            0,
+            0,
+            0,
+            0,
         ) {
             Ok(client_config) => {
                 let client = Client::new(client_config);

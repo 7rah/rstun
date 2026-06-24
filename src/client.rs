@@ -10,6 +10,7 @@ use crate::{
     },
     tunnel_message::TunnelMessage,
     udp::{UdpReceiver, UdpSender, udp_server::UdpServer, udp_tunnel::UdpTunnel},
+    util::stream_util::ZstdStats,
 };
 use anyhow::{Context, Result, bail};
 use backon::ExponentialBuilder;
@@ -66,7 +67,6 @@ impl Display for ClientState {
         }
     }
 }
-
 struct State {
     tcp_servers: HashMap<SocketAddr, TcpServer>,
     udp_servers: HashMap<SocketAddr, UdpServer>,
@@ -76,6 +76,7 @@ struct State {
     server_ipv6_supported: Option<bool>,
     client_state: ClientState,
     tunnel_stat: TunnelStat,
+    zstd_stats: Arc<ZstdStats>,
     event_bus: TunnelEventBus,
 }
 
@@ -90,6 +91,7 @@ impl State {
             server_ipv6_supported: None,
             client_state: ClientState::Idle,
             tunnel_stat: TunnelStat::default(),
+            zstd_stats: Arc::new(ZstdStats::new()),
             event_bus: TunnelEventBus::new(),
         }
     }
@@ -687,6 +689,8 @@ impl Client {
                     stream_receiver.clone(),
                     pending_request,
                     self.config.tcp_timeout_ms,
+                    self.config.zstd_config,
+                    inner_state!(self, zstd_stats).clone(),
                 );
                 Self::wait_for_connection_close(tunnel, conn, tunnel_task).await;
                 if !self.should_quit() {
@@ -1094,6 +1098,8 @@ impl Client {
             tcp_receiver,
             pending_request,
             self.config.tcp_timeout_ms,
+            self.config.zstd_config,
+            inner_state!(self, zstd_stats).clone(),
         );
         Self::wait_for_connection_close(tunnel, &conn, tunnel_task).await;
 
@@ -1175,8 +1181,13 @@ impl Client {
         );
 
         self.post_tunnel_state(tunnel, TunnelState::Tunneling);
-        let tunnel_task =
-            TcpTunnel::start_accepting(&conn, Some(local_server_addr), self.config.tcp_timeout_ms);
+        let tunnel_task = TcpTunnel::start_accepting(
+            &conn,
+            Some(local_server_addr),
+            self.config.tcp_timeout_ms,
+            self.config.zstd_config,
+            inner_state!(self, zstd_stats).clone(),
+        );
         Self::wait_for_connection_close(tunnel, &conn, tunnel_task).await;
 
         Ok(())
@@ -1232,6 +1243,8 @@ impl Client {
                     stat.lost_packets += locked_state.tunnel_stat.lost_packets;
                     stat.lost_bytes += locked_state.tunnel_stat.lost_bytes;
                     stat.congestion_events += locked_state.tunnel_stat.congestion_events;
+                    stat.zstd_raw_bytes = locked_state.zstd_stats.raw_bytes();
+                    stat.zstd_compressed_bytes = locked_state.zstd_stats.compressed_bytes();
 
                     (
                         stat,
@@ -1242,21 +1255,41 @@ impl Client {
 
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
-                    info!(
-                        "[traffic] rx_bytes={}, tx_bytes={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd_bytes={}, current_mtu={}",
-                        stat.rx_bytes,
-                        stat.tx_bytes,
-                        stat.rx_dgrams,
-                        stat.tx_dgrams,
-                        stat.sent_packets,
-                        stat.lost_packets,
-                        stat.lost_bytes,
-                        stat.congestion_events,
-                        stat.active_conns,
-                        stat.rtt_ms,
-                        stat.cwnd_bytes,
-                        stat.current_mtu
-                    );
+                    if stat.zstd_raw_bytes > 0 {
+                        info!(
+                            "[traffic] rx_bytes={}, tx_bytes={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd_bytes={}, current_mtu={}, zstd_raw_bytes={}, zstd_compressed_bytes={}",
+                            stat.rx_bytes,
+                            stat.tx_bytes,
+                            stat.rx_dgrams,
+                            stat.tx_dgrams,
+                            stat.sent_packets,
+                            stat.lost_packets,
+                            stat.lost_bytes,
+                            stat.congestion_events,
+                            stat.active_conns,
+                            stat.rtt_ms,
+                            stat.cwnd_bytes,
+                            stat.current_mtu,
+                            stat.zstd_raw_bytes,
+                            stat.zstd_compressed_bytes
+                        );
+                    } else {
+                        info!(
+                            "[traffic] rx_bytes={}, tx_bytes={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd_bytes={}, current_mtu={}",
+                            stat.rx_bytes,
+                            stat.tx_bytes,
+                            stat.rx_dgrams,
+                            stat.tx_dgrams,
+                            stat.sent_packets,
+                            stat.lost_packets,
+                            stat.lost_bytes,
+                            stat.congestion_events,
+                            stat.active_conns,
+                            stat.rtt_ms,
+                            stat.cwnd_bytes,
+                            stat.current_mtu
+                        );
+                    }
                 }
                 if event_bus.has_listeners() {
                     event_bus.post(TunnelEvent::new_without_tunnel(
@@ -1804,6 +1837,7 @@ mod tests {
             stream_receive_window: 0,
             quic_send_window: 0,
             sni_names: Vec::new(),
+            zstd_config: crate::ZstdConfig::default(),
         };
         let client = Client::new(config);
         let receiver = client.register_for_events();
@@ -1884,6 +1918,7 @@ mod tests {
             stream_receive_window: 0,
             quic_send_window: 0,
             sni_names: Vec::new(),
+            zstd_config: crate::ZstdConfig::default(),
         };
         let client = Client::new(config);
         let receiver = client.register_for_events();

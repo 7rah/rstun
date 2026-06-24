@@ -1,7 +1,8 @@
 use crate::tcp::StreamMessage;
 use crate::tcp::{AsyncStream, StreamReceiver, StreamRequest};
 use crate::util::stream_util::StreamUtil;
-use crate::{ChannelTcpConnectCtx, ChannelTcpConnector, format_optional_socket_addr};
+use crate::util::stream_util::ZstdStats;
+use crate::{ChannelTcpConnectCtx, ChannelTcpConnector, ZstdConfig, format_optional_socket_addr};
 use anyhow::Result;
 use log::{debug, warn};
 use std::borrow::BorrowMut;
@@ -19,6 +20,8 @@ impl TcpTunnel {
         default_upstream: Option<SocketAddr>,
         stream_timeout_ms: u64,
         tcp_connector: Option<ChannelTcpConnector>,
+        zstd_config: ZstdConfig,
+        zstd_stats: Arc<ZstdStats>,
     ) -> Result<()> {
         if let Some(connector) = tcp_connector {
             Self::start_accepting_with_connector(
@@ -26,10 +29,12 @@ impl TcpTunnel {
                 default_upstream,
                 stream_timeout_ms,
                 Some(connector),
+                zstd_config,
+                zstd_stats,
             )
             .await
         } else {
-            Self::start_accepting(conn, None, stream_timeout_ms).await
+            Self::start_accepting(conn, None, stream_timeout_ms, zstd_config, zstd_stats).await
         }
     }
 
@@ -39,6 +44,8 @@ impl TcpTunnel {
         stream_receiver: Arc<AsyncMutex<StreamReceiver<S>>>,
         pending_request: &mut Option<StreamRequest<S>>,
         stream_timeout_ms: u64,
+        zstd_config: ZstdConfig,
+        zstd_stats: Arc<ZstdStats>,
     ) -> Result<()> {
         loop {
             let request = match pending_request.take() {
@@ -67,6 +74,8 @@ impl TcpTunnel {
                         request.stream,
                         (quic_send, quic_recv),
                         stream_timeout_ms,
+                        zstd_config,
+                        zstd_stats.clone(),
                     )
                 }
                 Err(e) => {
@@ -84,8 +93,18 @@ impl TcpTunnel {
         conn: &quinn::Connection,
         upstream_addr: Option<SocketAddr>,
         stream_timeout_ms: u64,
+        zstd_config: ZstdConfig,
+        zstd_stats: Arc<ZstdStats>,
     ) -> Result<()> {
-        Self::start_accepting_with_connector(conn, upstream_addr, stream_timeout_ms, None).await
+        Self::start_accepting_with_connector(
+            conn,
+            upstream_addr,
+            stream_timeout_ms,
+            None,
+            zstd_config,
+            zstd_stats,
+        )
+        .await
     }
 
     pub async fn start_accepting_with_connector(
@@ -93,6 +112,8 @@ impl TcpTunnel {
         upstream_addr: Option<SocketAddr>,
         stream_timeout_ms: u64,
         tcp_connector: Option<ChannelTcpConnector>,
+        zstd_config: ZstdConfig,
+        zstd_stats: Arc<ZstdStats>,
     ) -> Result<()> {
         let remote_addr = &conn.remote_address();
         let upstream_addr_label = format_optional_socket_addr(upstream_addr);
@@ -116,6 +137,7 @@ impl TcpTunnel {
                 }
                 Ok((quic_send, mut quic_recv)) => {
                     let tcp_connector = tcp_connector.clone();
+                    let zstd_stats = zstd_stats.clone();
                     tokio::spawn(async move {
                         let requested_dst = if tcp_connector.is_some() || upstream_addr.is_none() {
                             match StreamUtil::read_tunnel_target(&mut quic_recv, stream_timeout_ms)
@@ -192,6 +214,8 @@ impl TcpTunnel {
                             upstream_stream,
                             (quic_send, quic_recv),
                             stream_timeout_ms,
+                            zstd_config,
+                            zstd_stats,
                         );
                     });
                 }
