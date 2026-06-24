@@ -2,7 +2,7 @@ use crate::BUFFER_POOL;
 use crate::ZstdConfig;
 use crate::tcp::AsyncStream;
 use anyhow::Result;
-use log::debug;
+use log::{debug, warn};
 use quinn::{RecvStream, SendStream};
 use std::fmt::Display;
 use std::io::Write as IoWrite;
@@ -147,9 +147,11 @@ async fn decode_to_stream(
     stats: &ZstdStats,
 ) -> bool {
     if IoWrite::write_all(decoder, compressed).is_err() {
+        warn!("[zstd] decoder write failed");
         return false;
     }
     if IoWrite::flush(decoder).is_err() {
+        warn!("[zstd] decoder flush failed");
         return false;
     }
     drain_decoder_to_stream(decoder, stream_write, transfer_bytes, stats).await
@@ -224,6 +226,13 @@ impl StreamUtil {
                         return;
                     }
                 };
+                if zstd_config.window_log > 0
+                    && let Err(e) = decoder.window_log_max(zstd_config.window_log)
+                {
+                    warn!("[{tag}] zstd decoder window setup failed id={index}, err={e}");
+                    let _ = quic_to_stream_tx.send(());
+                    return;
+                }
 
                 loop {
                     let result = tokio::time::timeout(
@@ -725,7 +734,7 @@ mod tests {
         let cfg = ZstdConfig::new(true, 0, 0, 0, 0);
         assert!(cfg.enabled);
         assert_eq!(cfg.level, 9);
-        assert_eq!(cfg.window_log, 28);
+        assert_eq!(cfg.window_log, 27);
         assert_eq!(cfg.flush_size, 8192);
         assert_eq!(cfg.flush_interval_ms, 150);
     }
@@ -825,6 +834,25 @@ mod tests {
             comp_buf.len(),
             single_size
         );
+    }
+
+    #[test]
+    fn zstd_streaming_window_log_28_decodes_with_matching_limit() {
+        let original = b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n".repeat(100);
+
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 9).unwrap();
+        encoder.window_log(28).unwrap();
+        IoWrite::write_all(&mut encoder, &original).unwrap();
+        IoWrite::flush(&mut encoder).unwrap();
+        let compressed = std::mem::take(encoder.get_mut());
+        assert!(!compressed.is_empty());
+
+        let mut decoder = zstd::stream::write::Decoder::new(Vec::new()).unwrap();
+        decoder.window_log_max(28).unwrap();
+        IoWrite::write_all(&mut decoder, &compressed).unwrap();
+        IoWrite::flush(&mut decoder).unwrap();
+
+        assert_eq!(decoder.get_ref(), &original);
     }
 
     #[test]
