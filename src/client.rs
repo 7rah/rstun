@@ -144,6 +144,25 @@ fn lock_state(state: &Arc<Mutex<State>>) -> MutexGuard<'_, State> {
     }
 }
 
+/// Format bytes as human-readable string: B, KB, MB, GB.
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    if bytes == 0 {
+        return "0B".to_string();
+    }
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{bytes}B")
+    } else {
+        format!("{:.1}{}", size, UNITS[unit_idx])
+    }
+}
+
 impl Client {
     pub fn new(mut config: ClientConfig) -> Self {
         INIT.call_once(|| {
@@ -1255,41 +1274,37 @@ impl Client {
 
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
-                    if stat.zstd_raw_bytes > 0 {
-                        info!(
-                            "[traffic] rx_bytes={}, tx_bytes={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd_bytes={}, current_mtu={}, zstd_raw_bytes={}, zstd_compressed_bytes={}",
-                            stat.rx_bytes,
-                            stat.tx_bytes,
-                            stat.rx_dgrams,
-                            stat.tx_dgrams,
-                            stat.sent_packets,
-                            stat.lost_packets,
-                            stat.lost_bytes,
-                            stat.congestion_events,
-                            stat.active_conns,
-                            stat.rtt_ms,
-                            stat.cwnd_bytes,
-                            stat.current_mtu,
-                            stat.zstd_raw_bytes,
-                            stat.zstd_compressed_bytes
-                        );
+                    let zstd_suffix = if stat.zstd_raw_bytes > 0 {
+                        let ratio = if stat.zstd_raw_bytes > 0 {
+                            stat.zstd_compressed_bytes as f64 / stat.zstd_raw_bytes as f64 * 100.0
+                        } else {
+                            0.0
+                        };
+                        format!(
+                            ", zstd_raw={}, zstd_compressed={}, zstd_ratio={:.1}%",
+                            format_bytes(stat.zstd_raw_bytes),
+                            format_bytes(stat.zstd_compressed_bytes),
+                            ratio
+                        )
                     } else {
-                        info!(
-                            "[traffic] rx_bytes={}, tx_bytes={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd_bytes={}, current_mtu={}",
-                            stat.rx_bytes,
-                            stat.tx_bytes,
-                            stat.rx_dgrams,
-                            stat.tx_dgrams,
-                            stat.sent_packets,
-                            stat.lost_packets,
-                            stat.lost_bytes,
-                            stat.congestion_events,
-                            stat.active_conns,
-                            stat.rtt_ms,
-                            stat.cwnd_bytes,
-                            stat.current_mtu
-                        );
-                    }
+                        String::new()
+                    };
+                    info!(
+                        "[traffic] rx={}, tx={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd={}, current_mtu={}{}",
+                        format_bytes(stat.rx_bytes),
+                        format_bytes(stat.tx_bytes),
+                        stat.rx_dgrams,
+                        stat.tx_dgrams,
+                        stat.sent_packets,
+                        stat.lost_packets,
+                        format_bytes(stat.lost_bytes),
+                        stat.congestion_events,
+                        stat.active_conns,
+                        stat.rtt_ms,
+                        format_bytes(stat.cwnd_bytes),
+                        stat.current_mtu,
+                        zstd_suffix
+                    );
                 }
                 if event_bus.has_listeners() {
                     event_bus.post(TunnelEvent::new_without_tunnel(
