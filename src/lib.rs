@@ -218,9 +218,9 @@ impl ZstdConfig {
         Self {
             enabled,
             level: if level == 0 { 9 } else { level },
-            window_log: if window_log == 0 { 27 } else { window_log },
+            window_log: if window_log == 0 { 28 } else { window_log },
             flush_size: if flush_size == 0 { 8192 } else { flush_size },
-            flush_interval_ms: if flush_interval_ms == 0 { 50 } else { flush_interval_ms },
+            flush_interval_ms: if flush_interval_ms == 0 { 150 } else { flush_interval_ms },
         }
     }
 }

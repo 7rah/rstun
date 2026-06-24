@@ -288,16 +288,16 @@ struct ClientArgs {
     #[arg(long, default_value_t = 9)]
     zstd_level: i32,
 
-    /// zstd window log (default 27 = 128MB)
-    #[arg(long, default_value_t = 27)]
+    /// zstd window log (default 28 = 256MB)
+    #[arg(long, default_value_t = 28)]
     zstd_window_log: u32,
 
     /// zstd flush size threshold in bytes (default 8192, matches buffer size)
     #[arg(long, default_value_t = 8192)]
     zstd_flush_size: usize,
 
-    /// zstd max flush interval in milliseconds (default 50)
-    #[arg(long, default_value_t = 50)]
+    /// zstd max flush interval in milliseconds (default 150)
+    #[arg(long, default_value_t = 150)]
     zstd_flush_interval_ms: u64,
 
     /// Log level
