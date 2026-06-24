@@ -163,6 +163,15 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Percentage `part` is of `whole`; 0.0 when `whole` is zero to avoid division by zero.
+fn pct(part: u64, whole: u64) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 / whole as f64 * 100.0
+    }
+}
+
 impl Client {
     pub fn new(mut config: ClientConfig) -> Self {
         INIT.call_once(|| {
@@ -1262,8 +1271,10 @@ impl Client {
                     stat.lost_packets += locked_state.tunnel_stat.lost_packets;
                     stat.lost_bytes += locked_state.tunnel_stat.lost_bytes;
                     stat.congestion_events += locked_state.tunnel_stat.congestion_events;
-                    stat.zstd_raw_bytes = locked_state.zstd_stats.raw_bytes();
-                    stat.zstd_compressed_bytes = locked_state.zstd_stats.compressed_bytes();
+                    stat.s2q_raw_bytes = locked_state.zstd_stats.s2q_raw_bytes();
+                    stat.s2q_compressed_bytes = locked_state.zstd_stats.s2q_compressed_bytes();
+                    stat.q2s_compressed_bytes = locked_state.zstd_stats.q2s_compressed_bytes();
+                    stat.q2s_decompressed_bytes = locked_state.zstd_stats.q2s_decompressed_bytes();
 
                     (
                         stat,
@@ -1271,20 +1282,19 @@ impl Client {
                         locked_state.event_bus.clone(),
                     )
                 };
-
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
-                    let zstd_suffix = if stat.zstd_raw_bytes > 0 {
-                        let ratio = if stat.zstd_raw_bytes > 0 {
-                            stat.zstd_compressed_bytes as f64 / stat.zstd_raw_bytes as f64 * 100.0
-                        } else {
-                            0.0
-                        };
+                    let zstd_suffix = if stat.s2q_raw_bytes > 0 || stat.q2s_compressed_bytes > 0 {
+                        let s2q_ratio = pct(stat.s2q_compressed_bytes, stat.s2q_raw_bytes);
+                        let q2s_ratio = pct(stat.q2s_decompressed_bytes, stat.q2s_compressed_bytes);
                         format!(
-                            ", zstd_raw={}, zstd_compressed={}, zstd_ratio={:.1}%",
-                            format_bytes(stat.zstd_raw_bytes),
-                            format_bytes(stat.zstd_compressed_bytes),
-                            ratio
+                            ", s2q_raw={}, s2q_compressed={}, s2q_ratio={:.1}%, q2s_compressed={}, q2s_decompressed={}, q2s_ratio={:.1}%",
+                            format_bytes(stat.s2q_raw_bytes),
+                            format_bytes(stat.s2q_compressed_bytes),
+                            s2q_ratio,
+                            format_bytes(stat.q2s_compressed_bytes),
+                            format_bytes(stat.q2s_decompressed_bytes),
+                            q2s_ratio,
                         )
                     } else {
                         String::new()

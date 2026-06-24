@@ -1,15 +1,15 @@
 use crate::BUFFER_POOL;
-use std::net::IpAddr;
-use crate::tcp::AsyncStream;
 use crate::ZstdConfig;
+use crate::tcp::AsyncStream;
 use anyhow::Result;
 use log::debug;
 use quinn::{RecvStream, SendStream};
 use std::fmt::Display;
 use std::io::Write as IoWrite;
+use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::oneshot;
@@ -17,33 +17,58 @@ use tokio::time::error::Elapsed;
 
 // ── zstd statistics ──────────────────────────────────────────────
 
+/// Per-direction zstd byte counters. `s2q` = stream→quic (TCP upload,
+/// encode side); `q2s` = quic→stream (TCP download, decode side).
 pub struct ZstdStats {
-    pub raw_bytes: AtomicU64,
-    pub compressed_bytes: AtomicU64,
+    pub s2q_raw_bytes: AtomicU64,
+    pub s2q_compressed_bytes: AtomicU64,
+    pub q2s_compressed_bytes: AtomicU64,
+    pub q2s_decompressed_bytes: AtomicU64,
 }
 
 impl ZstdStats {
     pub fn new() -> Self {
         Self {
-            raw_bytes: AtomicU64::new(0),
-            compressed_bytes: AtomicU64::new(0),
+            s2q_raw_bytes: AtomicU64::new(0),
+            s2q_compressed_bytes: AtomicU64::new(0),
+            q2s_compressed_bytes: AtomicU64::new(0),
+            q2s_decompressed_bytes: AtomicU64::new(0),
         }
     }
 
-    pub fn raw_bytes(&self) -> u64 {
-        self.raw_bytes.load(Ordering::Relaxed)
+    pub fn s2q_raw_bytes(&self) -> u64 {
+        self.s2q_raw_bytes.load(Ordering::Relaxed)
     }
 
-    pub fn compressed_bytes(&self) -> u64 {
-        self.compressed_bytes.load(Ordering::Relaxed)
+    pub fn s2q_compressed_bytes(&self) -> u64 {
+        self.s2q_compressed_bytes.load(Ordering::Relaxed)
     }
 
-    fn add_raw(&self, n: usize) {
-        self.raw_bytes.fetch_add(n as u64, Ordering::Relaxed);
+    pub fn q2s_compressed_bytes(&self) -> u64 {
+        self.q2s_compressed_bytes.load(Ordering::Relaxed)
     }
 
-    fn add_compressed(&self, n: usize) {
-        self.compressed_bytes.fetch_add(n as u64, Ordering::Relaxed);
+    pub fn q2s_decompressed_bytes(&self) -> u64 {
+        self.q2s_decompressed_bytes.load(Ordering::Relaxed)
+    }
+
+    fn add_s2q_raw(&self, n: usize) {
+        self.s2q_raw_bytes.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    fn add_s2q_compressed(&self, n: usize) {
+        self.s2q_compressed_bytes
+            .fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    fn add_q2s_compressed(&self, n: usize) {
+        self.q2s_compressed_bytes
+            .fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    fn add_q2s_decompressed(&self, n: usize) {
+        self.q2s_decompressed_bytes
+            .fetch_add(n as u64, Ordering::Relaxed);
     }
 }
 
@@ -91,7 +116,7 @@ async fn drain_encoder_to_quic(
     if comp_data.is_empty() {
         return true;
     }
-    stats.add_compressed(comp_data.len());
+    stats.add_s2q_compressed(comp_data.len());
     quic_send.write_all(&comp_data).await.is_ok()
 }
 
@@ -101,11 +126,13 @@ async fn drain_decoder_to_stream(
     decoder: &mut zstd::stream::write::Decoder<'_, Vec<u8>>,
     stream_write: &mut WriteHalf<impl AsyncStream>,
     transfer_bytes: &mut u64,
+    stats: &ZstdStats,
 ) -> bool {
     let dec_data = std::mem::take(decoder.get_mut());
     if dec_data.is_empty() {
         return true;
     }
+    stats.add_q2s_decompressed(dec_data.len());
     *transfer_bytes += dec_data.len() as u64;
     stream_write.write_all(&dec_data).await.is_ok()
 }
@@ -117,6 +144,7 @@ async fn decode_to_stream(
     compressed: &[u8],
     stream_write: &mut WriteHalf<impl AsyncStream>,
     transfer_bytes: &mut u64,
+    stats: &ZstdStats,
 ) -> bool {
     if IoWrite::write_all(decoder, compressed).is_err() {
         return false;
@@ -124,7 +152,7 @@ async fn decode_to_stream(
     if IoWrite::flush(decoder).is_err() {
         return false;
     }
-    drain_decoder_to_stream(decoder, stream_write, transfer_bytes).await
+    drain_decoder_to_stream(decoder, stream_write, transfer_bytes, stats).await
 }
 
 // ── error types ───────────────────────────────────────────────────
@@ -220,18 +248,20 @@ impl StreamUtil {
                                 &mut decoder,
                                 &mut stream_write,
                                 &mut transfer_bytes,
+                                &zstd_stats_q2s,
                             )
                             .await;
                             let _ = quic_to_stream_tx.send(());
                             break;
                         }
                         Ok(Ok(Some(len_read))) => {
-                            zstd_stats_q2s.add_compressed(len_read);
+                            zstd_stats_q2s.add_q2s_compressed(len_read);
                             if !decode_to_stream(
                                 &mut decoder,
                                 &buffer[..len_read],
                                 &mut stream_write,
                                 &mut transfer_bytes,
+                                &zstd_stats_q2s,
                             )
                             .await
                             {
@@ -278,17 +308,15 @@ impl StreamUtil {
             let mut buffer = BUFFER_POOL.alloc_and_fill(BUFFER_SIZE);
 
             if zstd_enabled {
-                let mut encoder = match zstd::stream::write::Encoder::new(
-                    Vec::new(),
-                    zstd_config.level,
-                ) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        debug!("[{tag}] zstd encoder init failed id={index}, err={e}");
-                        let _ = stream_to_quic_tx.send(());
-                        return;
-                    }
-                };
+                let mut encoder =
+                    match zstd::stream::write::Encoder::new(Vec::new(), zstd_config.level) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            debug!("[{tag}] zstd encoder init failed id={index}, err={e}");
+                            let _ = stream_to_quic_tx.send(());
+                            return;
+                        }
+                    };
                 if zstd_config.window_log > 0 {
                     let _ = encoder.window_log(zstd_config.window_log);
                 }
@@ -315,8 +343,9 @@ impl StreamUtil {
                         }
                         Ok(Err(_)) | Ok(Ok(0)) => {
                             let is_eof = matches!(result, Ok(Ok(0)));
-                            let _ = finish_encoder_to_quic(&mut encoder, &mut quic_send, &zstd_stats)
-                                .await;
+                            let _ =
+                                finish_encoder_to_quic(&mut encoder, &mut quic_send, &zstd_stats)
+                                    .await;
                             if is_eof {
                                 let _ = quic_send.finish();
                             }
@@ -324,7 +353,7 @@ impl StreamUtil {
                             break;
                         }
                         Ok(Ok(len_read)) => {
-                            zstd_stats.add_raw(len_read);
+                            zstd_stats.add_s2q_raw(len_read);
                             transfer_bytes += len_read as u64;
                             if IoWrite::write_all(&mut encoder, &buffer[..len_read]).is_err() {
                                 let _ = stream_to_quic_tx.send(());
@@ -332,12 +361,8 @@ impl StreamUtil {
                             }
                             pending += len_read;
                             if pending >= zstd_config.flush_size {
-                                if !flush_encoder_to_quic(
-                                    &mut encoder,
-                                    &mut quic_send,
-                                    &zstd_stats,
-                                )
-                                .await
+                                if !flush_encoder_to_quic(&mut encoder, &mut quic_send, &zstd_stats)
+                                    .await
                                 {
                                     let _ = stream_to_quic_tx.send(());
                                     break;
@@ -376,7 +401,6 @@ impl StreamUtil {
             debug!(
                 "[{tag}] stream close id={index}, peer={peer_addr}, dir=s2q, bytes={transfer_bytes}"
             );
-            
         });
     }
 
@@ -592,8 +616,7 @@ impl StreamUtil {
                     .await
                     .map_err(|_: Elapsed| TransferError::TimeoutError)?
                     .map_err(|_| TransferError::InternalError)?;
-                let host = String::from_utf8(host_buf)
-                    .map_err(|_| TransferError::InvalidDomain)?;
+                let host = String::from_utf8(host_buf).map_err(|_| TransferError::InvalidDomain)?;
                 let port = u16::from_be_bytes(port_buf);
                 Ok(crate::TunnelTarget::Domain(host, port))
             }
@@ -657,9 +680,11 @@ mod tests {
     #[test]
     fn encode_none_respects_mark_none() {
         // mark_none=false → None (nothing to write)
-        assert!(StreamUtil::encode_tunnel_target(&None, false)
-            .unwrap()
-            .is_none());
+        assert!(
+            StreamUtil::encode_tunnel_target(&None, false)
+                .unwrap()
+                .is_none()
+        );
         // mark_none=true → Some([0])
         let encoded = StreamUtil::encode_tunnel_target(&None, true)
             .unwrap()
@@ -685,8 +710,8 @@ mod tests {
 
         // family=3, host_len=0
         let mut cursor = std::io::Cursor::new(vec![3u8, 0]);
-        let result = StreamUtil::read_tunnel_target_body(&mut cursor, 3, Duration::from_secs(5))
-            .await;
+        let result =
+            StreamUtil::read_tunnel_target_body(&mut cursor, 3, Duration::from_secs(5)).await;
         assert!(result.is_err());
     }
 
@@ -708,15 +733,21 @@ mod tests {
     #[test]
     fn zstd_stats_tracking() {
         let stats = ZstdStats::new();
-        assert_eq!(stats.raw_bytes(), 0);
-        assert_eq!(stats.compressed_bytes(), 0);
+        assert_eq!(stats.s2q_raw_bytes(), 0);
+        assert_eq!(stats.s2q_compressed_bytes(), 0);
+        assert_eq!(stats.q2s_compressed_bytes(), 0);
+        assert_eq!(stats.q2s_decompressed_bytes(), 0);
 
-        stats.add_raw(100);
-        stats.add_raw(50);
-        stats.add_compressed(30);
+        stats.add_s2q_raw(100);
+        stats.add_s2q_raw(50);
+        stats.add_s2q_compressed(30);
+        stats.add_q2s_compressed(20);
+        stats.add_q2s_decompressed(40);
 
-        assert_eq!(stats.raw_bytes(), 150);
-        assert_eq!(stats.compressed_bytes(), 30);
+        assert_eq!(stats.s2q_raw_bytes(), 150);
+        assert_eq!(stats.s2q_compressed_bytes(), 30);
+        assert_eq!(stats.q2s_compressed_bytes(), 20);
+        assert_eq!(stats.q2s_decompressed_bytes(), 40);
     }
 
     #[test]
@@ -727,8 +758,10 @@ mod tests {
                 let s = stats.clone();
                 std::thread::spawn(move || {
                     for _ in 0..1000 {
-                        s.add_raw(1);
-                        s.add_compressed(1);
+                        s.add_s2q_raw(1);
+                        s.add_s2q_compressed(1);
+                        s.add_q2s_compressed(1);
+                        s.add_q2s_decompressed(1);
                     }
                 })
             })
@@ -736,8 +769,10 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        assert_eq!(stats.raw_bytes(), 4000);
-        assert_eq!(stats.compressed_bytes(), 4000);
+        assert_eq!(stats.s2q_raw_bytes(), 4000);
+        assert_eq!(stats.s2q_compressed_bytes(), 4000);
+        assert_eq!(stats.q2s_compressed_bytes(), 4000);
+        assert_eq!(stats.q2s_decompressed_bytes(), 4000);
     }
 
     #[test]

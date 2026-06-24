@@ -18,8 +18,10 @@ pub struct TunnelStat {
     pub rtt_ms: u64,
     pub cwnd_bytes: u64,
     pub current_mtu: u16,
-    pub zstd_raw_bytes: u64,
-    pub zstd_compressed_bytes: u64,
+    pub s2q_raw_bytes: u64,
+    pub s2q_compressed_bytes: u64,
+    pub q2s_compressed_bytes: u64,
+    pub q2s_decompressed_bytes: u64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq, Hash)]
