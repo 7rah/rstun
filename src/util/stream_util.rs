@@ -699,9 +699,9 @@ mod tests {
 
         let cfg = ZstdConfig::new(true, 0, 0, 0, 0);
         assert!(cfg.enabled);
-        assert_eq!(cfg.level, 3);
-        assert_eq!(cfg.window_log, 21);
-        assert_eq!(cfg.flush_size, 4096);
+        assert_eq!(cfg.level, 9);
+        assert_eq!(cfg.window_log, 27);
+        assert_eq!(cfg.flush_size, 8192);
         assert_eq!(cfg.flush_interval_ms, 100);
     }
 
