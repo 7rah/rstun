@@ -296,8 +296,8 @@ struct ClientArgs {
     #[arg(long, default_value_t = 8192)]
     zstd_flush_size: usize,
 
-    /// zstd max flush interval in milliseconds (default 100)
-    #[arg(long, default_value_t = 100)]
+    /// zstd max flush interval in milliseconds (default 50)
+    #[arg(long, default_value_t = 50)]
     zstd_flush_interval_ms: u64,
 
     /// Log level
