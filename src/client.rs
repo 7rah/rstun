@@ -728,6 +728,7 @@ impl Client {
         stat.lost_packets += stats.path.lost_packets;
         stat.lost_bytes += stats.path.lost_bytes;
         stat.congestion_events += stats.path.congestion_events;
+        stat.black_holes += stats.path.black_holes_detected;
     }
 
     async fn prepare_login_config(&self) -> Result<LoginConfig> {
@@ -905,6 +906,7 @@ impl Client {
         stat.rtt_ms = stat.rtt_ms.max(stats.path.rtt.as_millis() as u64);
         stat.cwnd_bytes = stat.cwnd_bytes.max(stats.path.cwnd);
         stat.current_mtu = stat.current_mtu.max(stats.path.current_mtu);
+        stat.black_holes += stats.path.black_holes_detected;
     }
 
     fn clear_cached_endpoint_if_idle(&self, tunnel: &TunnelDescriptor, reason: &str) -> bool {
@@ -1262,6 +1264,7 @@ impl Client {
                     stat.lost_packets += locked_state.tunnel_stat.lost_packets;
                     stat.lost_bytes += locked_state.tunnel_stat.lost_bytes;
                     stat.congestion_events += locked_state.tunnel_stat.congestion_events;
+                    stat.black_holes += locked_state.tunnel_stat.black_holes;
 
                     (
                         stat,
@@ -1272,7 +1275,7 @@ impl Client {
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
                     info!(
-                        "[traffic] down={}, up={}, down_dgrams={}, up_dgrams={}, sent_packets={}, lost_packets={}, lost={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd={}, mtu={}",
+                        "[traffic] down={}, up={}, down_dgrams={}, up_dgrams={}, sent_packets={}, lost_packets={}, lost={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd={}, mtu={}, black_holes={}",
                         crate::human_readable_bytes(stat.rx_bytes),
                         crate::human_readable_bytes(stat.tx_bytes),
                         stat.rx_dgrams,
@@ -1284,7 +1287,8 @@ impl Client {
                         stat.active_conns,
                         stat.rtt_ms,
                         crate::human_readable_bytes(stat.cwnd_bytes),
-                        stat.current_mtu
+                        stat.current_mtu,
+                        stat.black_holes
                     );
                 }
                 // Aggregate codec compression stats across all streams.
