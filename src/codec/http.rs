@@ -23,6 +23,10 @@ pub struct HttpMessageReader {
     buf: Vec<u8>,
     /// Whether we've already parsed at least one message from this stream.
     initialized: bool,
+    /// Once set, stop parsing HTTP frames and pass through raw bytes.
+    /// Engaged when a message has no Content-Length (chunked / SSE / streaming)
+    /// so that subsequent body bytes are not misread as HTTP headers.
+    drain_mode: bool,
 }
 
 impl Default for HttpMessageReader {
@@ -36,6 +40,7 @@ impl HttpMessageReader {
         HttpMessageReader {
             buf: Vec::with_capacity(8192),
             initialized: false,
+            drain_mode: false,
         }
     }
 
@@ -61,6 +66,22 @@ impl HttpMessageReader {
         let timeout = Duration::from_millis(stream_timeout_ms);
 
         loop {
+            // Once we've entered drain mode (chunked / SSE / streaming with no
+            // Content-Length), pass through raw bytes without re-parsing HTTP.
+            if self.drain_mode {
+                if !self.buf.is_empty() {
+                    return Ok(HttpReadResult::Message(std::mem::take(&mut self.buf)));
+                }
+                let mut tmp = [0u8; 8192];
+                let n = tokio::time::timeout(timeout, reader.read(&mut tmp))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("http read timeout"))??;
+                if n == 0 {
+                    return Ok(HttpReadResult::Message(Vec::new()));
+                }
+                return Ok(HttpReadResult::Message(tmp[..n].to_vec()));
+            }
+
             // Try to parse what we have buffered so far.
             if let Some(msg) = self.try_parse()? {
                 return Ok(HttpReadResult::Message(msg));
@@ -185,13 +206,15 @@ impl HttpMessageReader {
             }
             None => {
                 // No Content-Length (SSE, chunked, streaming).
-                // We can't determine the message boundary.
-                // Return all currently-buffered data as one "message"
-                // and let the caller flush it. The caller will call again
-                // for the next chunk.
+                // We can't determine the message boundary, so emit what we
+                // have (headers + any body bytes already read) and switch to
+                // drain mode: subsequent reads pass through raw bytes without
+                // re-parsing, which would otherwise misinterpret chunked body
+                // fragments as HTTP headers.
                 if self.buf.is_empty() {
                     return Ok(None);
                 }
+                self.drain_mode = true;
                 let msg = std::mem::take(&mut self.buf);
                 Ok(Some(msg))
             }
