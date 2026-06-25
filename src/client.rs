@@ -687,6 +687,7 @@ impl Client {
                     stream_receiver.clone(),
                     pending_request,
                     self.config.tcp_timeout_ms,
+                    self.codec_config(),
                 );
                 Self::wait_for_connection_close(tunnel, conn, tunnel_task).await;
                 if !self.should_quit() {
@@ -1094,6 +1095,7 @@ impl Client {
             tcp_receiver,
             pending_request,
             self.config.tcp_timeout_ms,
+            self.codec_config(),
         );
         Self::wait_for_connection_close(tunnel, &conn, tunnel_task).await;
 
@@ -1175,8 +1177,12 @@ impl Client {
         );
 
         self.post_tunnel_state(tunnel, TunnelState::Tunneling);
-        let tunnel_task =
-            TcpTunnel::start_accepting(&conn, Some(local_server_addr), self.config.tcp_timeout_ms);
+        let tunnel_task = TcpTunnel::start_accepting(
+            &conn,
+            Some(local_server_addr),
+            self.config.tcp_timeout_ms,
+            self.codec_config(),
+        );
         Self::wait_for_connection_close(tunnel, &conn, tunnel_task).await;
 
         Ok(())
@@ -1206,6 +1212,27 @@ impl Client {
         state == ClientState::Stopping || state == ClientState::Terminated
     }
 
+    fn codec_config(&self) -> crate::codec::CodecConfig {
+        let mut cfg = crate::codec::CodecConfig::new(
+            self.config.zstd,
+            self.config.http,
+            self.config.zstd_level,
+            self.config.zstd_pair_ttl_secs,
+            self.config.zstd_flush_interval_ms,
+        );
+        if !self.config.zstd_dict.is_empty() {
+            if let Ok(dict_bytes) = std::fs::read(&self.config.zstd_dict) {
+                cfg = cfg.with_dictionary(&dict_bytes);
+            } else {
+                log::warn!(
+                    "[client] failed to read zstd dictionary file: {}",
+                    self.config.zstd_dict
+                );
+            }
+        }
+        cfg
+    }
+
     fn report_traffic_data_in_background(&self) {
         let state = self.inner_state.clone();
         tokio::spawn(async move {
@@ -1215,11 +1242,9 @@ impl Client {
 
             loop {
                 interval.tick().await;
-
                 let (stat, client_state, event_bus) = {
                     let locked_state = lock_state(&state);
                     let mut stat = TunnelStat::default();
-
                     for entry in locked_state.connections.values() {
                         Self::append_conn_stats_to_tunnel_stat(&mut stat, &entry.conn);
                     }
@@ -1239,7 +1264,6 @@ impl Client {
                         locked_state.event_bus.clone(),
                     )
                 };
-
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
                     info!(
@@ -1804,6 +1828,7 @@ mod tests {
             stream_receive_window: 0,
             quic_send_window: 0,
             sni_names: Vec::new(),
+            ..ClientConfig::default()
         };
         let client = Client::new(config);
         let receiver = client.register_for_events();
@@ -1884,6 +1909,7 @@ mod tests {
             stream_receive_window: 0,
             quic_send_window: 0,
             sni_names: Vec::new(),
+            ..ClientConfig::default()
         };
         let client = Client::new(config);
         let receiver = client.register_for_events();

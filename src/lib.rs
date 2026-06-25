@@ -8,6 +8,7 @@ mod tunnel_event_bus;
 mod tunnel_message;
 mod udp;
 mod util;
+pub mod codec;
 
 use anyhow::{Context, Result};
 use byte_pool::BytePool;
@@ -288,6 +289,21 @@ pub struct ClientConfig {
     pub quic_send_window: u64,
     /// Custom SNI hostnames presented on the wire (round-robin). Empty = disabled.
     pub sni_names: Vec<String>,
+    /// Enable zstd compression on TCP tunnel streams.
+    pub zstd: bool,
+    /// Enable HTTP-aware compression (requires zstd). Parses HTTP/1.x
+    /// messages and flushes at message boundaries when Content-Length is present.
+    pub http: bool,
+    /// zstd compression level (1-22, default 3).
+    pub zstd_level: i32,
+    /// Path to a zstd dictionary file (optional).
+    pub zstd_dict: String,
+    /// Codec pair TTL in seconds (idle pairs are evicted after this duration).
+    pub zstd_pair_ttl_secs: u64,
+    /// Flush interval for drain mode in milliseconds. When no data is
+    /// naturally produced by the encoder for this duration, a forced
+    /// flush is triggered.
+    pub zstd_flush_interval_ms: u64,
 }
 
 #[derive(Clone)]
@@ -468,6 +484,12 @@ impl ClientConfig {
         mut heartbeat_interval_ms: u64,
         mut heartbeat_timeout_ms: u64,
         mut hop_interval_ms: u64,
+        zstd: bool,
+        http: bool,
+        zstd_level: i32,
+        zstd_dict: &str,
+        zstd_pair_ttl_secs: u64,
+        zstd_flush_interval_ms: u64,
     ) -> Result<ClientConfig> {
         if tcp_mappings.is_empty() && udp_mappings.is_empty() {
             log_and_bail!("must specify either --tcp-mappings or --udp-mappings, or both");
@@ -524,9 +546,15 @@ impl ClientConfig {
             heartbeat_interval_ms,
             heartbeat_timeout_ms,
             hop_interval_ms,
+            sni_names: parse_sni_names(sni)?,
+            zstd,
+            http,
+            zstd_level,
+            zstd_dict: zstd_dict.to_string(),
+            zstd_pair_ttl_secs: if zstd_pair_ttl_secs == 0 { 5 * 3600 } else { zstd_pair_ttl_secs },
+            zstd_flush_interval_ms: if zstd_flush_interval_ms == 0 { 50 } else { zstd_flush_interval_ms },
             dot_servers: dot.split(',').map(|s| s.to_string()).collect(),
             dns_servers: dns.split(',').map(|s| s.to_string()).collect(),
-            sni_names: parse_sni_names(sni)?,
             ..ClientConfig::default()
         };
 

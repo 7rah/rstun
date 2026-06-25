@@ -39,6 +39,12 @@ fn run_client(args: ClientArgs) {
         args.heartbeat_interval_ms,
         args.heartbeat_timeout_ms,
         args.hop_interval_ms,
+        args.zstd,
+        args.http,
+        args.zstd_level,
+        &args.zstd_dict,
+        args.zstd_pair_ttl_secs,
+        args.zstd_flush_interval_ms,
     )
     .map_err(|e| {
         error!("{e}");
@@ -274,6 +280,31 @@ struct ClientArgs {
         hide_default_value = true
     )]
     sni_names: String,
+
+    /// Enable zstd compression on TCP tunnel streams.
+    #[arg(long, default_value_t = false)]
+    zstd: bool,
+
+    /// Enable HTTP-aware compression (requires --zstd). Parses HTTP/1.x
+    /// messages and flushes at message boundaries when Content-Length is present.
+    #[arg(long, default_value_t = false)]
+    http: bool,
+
+    /// zstd compression level (1-22).
+    #[arg(long, default_value_t = 3)]
+    zstd_level: i32,
+
+    /// Path to a zstd dictionary file (optional, improves compression for small/similar data).
+    #[arg(long, default_value = "", hide_default_value = true)]
+    zstd_dict: String,
+
+    /// Codec pair TTL in seconds (idle pairs evicted after this duration, 0 = use default 18000).
+    #[arg(long, default_value_t = 0)]
+    zstd_pair_ttl_secs: u64,
+
+    /// Flush interval for drain mode in milliseconds (0 = use default 50ms).
+    #[arg(long, default_value_t = 0)]
+    zstd_flush_interval_ms: u64,
 
     /// Log level
     #[arg(short = 'l', long, default_value_t = String::from("I"),

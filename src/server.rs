@@ -167,6 +167,7 @@ impl Server {
                                 &info.conn,
                                 Some(info.upstream_addr),
                                 timeouts.tcp_timeout_ms,
+                                crate::codec::CodecConfig::default(),
                             )
                             .await
                             .ok();
@@ -208,6 +209,7 @@ impl Server {
                                 tcp_receiver,
                                 &mut None,
                                 timeouts.tcp_timeout_ms,
+                                crate::codec::CodecConfig::default(),
                             )
                             .await
                             .ok();
@@ -251,6 +253,7 @@ impl Server {
                                 config.default_tcp_upstream,
                                 timeouts.tcp_timeout_ms,
                                 config.channel_tcp_connector.clone(),
+                                crate::codec::CodecConfig::default(),
                             )
                             .await
                             .ok();

@@ -19,6 +19,7 @@ impl TcpTunnel {
         default_upstream: Option<SocketAddr>,
         stream_timeout_ms: u64,
         tcp_connector: Option<ChannelTcpConnector>,
+        codec: crate::codec::CodecConfig,
     ) -> Result<()> {
         if let Some(connector) = tcp_connector {
             Self::start_accepting_with_connector(
@@ -26,10 +27,11 @@ impl TcpTunnel {
                 default_upstream,
                 stream_timeout_ms,
                 Some(connector),
+                codec,
             )
             .await
         } else {
-            Self::start_accepting(conn, None, stream_timeout_ms).await
+            Self::start_accepting(conn, None, stream_timeout_ms, crate::codec::CodecConfig::default()).await
         }
     }
 
@@ -39,6 +41,7 @@ impl TcpTunnel {
         stream_receiver: Arc<AsyncMutex<StreamReceiver<S>>>,
         pending_request: &mut Option<StreamRequest<S>>,
         stream_timeout_ms: u64,
+        codec: crate::codec::CodecConfig,
     ) -> Result<()> {
         loop {
             let request = match pending_request.take() {
@@ -62,11 +65,12 @@ impl TcpTunnel {
                         *pending_request = Some(request);
                         continue;
                     }
-                    StreamUtil::start_flowing(
+                    crate::codec::start_flowing_with_codec(
                         if tunnel_out { "OUT" } else { "IN" },
                         request.stream,
                         (quic_send, quic_recv),
                         stream_timeout_ms,
+                        codec.clone(),
                     )
                 }
                 Err(e) => {
@@ -84,8 +88,9 @@ impl TcpTunnel {
         conn: &quinn::Connection,
         upstream_addr: Option<SocketAddr>,
         stream_timeout_ms: u64,
+        codec: crate::codec::CodecConfig,
     ) -> Result<()> {
-        Self::start_accepting_with_connector(conn, upstream_addr, stream_timeout_ms, None).await
+        Self::start_accepting_with_connector(conn, upstream_addr, stream_timeout_ms, None, codec).await
     }
 
     pub async fn start_accepting_with_connector(
@@ -93,6 +98,7 @@ impl TcpTunnel {
         upstream_addr: Option<SocketAddr>,
         stream_timeout_ms: u64,
         tcp_connector: Option<ChannelTcpConnector>,
+        codec: crate::codec::CodecConfig,
     ) -> Result<()> {
         let remote_addr = &conn.remote_address();
         let upstream_addr_label = format_optional_socket_addr(upstream_addr);
@@ -116,6 +122,7 @@ impl TcpTunnel {
                 }
                 Ok((quic_send, mut quic_recv)) => {
                     let tcp_connector = tcp_connector.clone();
+                    let codec = codec.clone();
                     tokio::spawn(async move {
                         let requested_dst = if tcp_connector.is_some() || upstream_addr.is_none() {
                             match StreamUtil::read_tunnel_target(&mut quic_recv, stream_timeout_ms)
@@ -187,11 +194,12 @@ impl TcpTunnel {
                             }
                         };
 
-                        StreamUtil::start_flowing(
+                        crate::codec::start_flowing_with_codec(
                             "OUT",
                             upstream_stream,
                             (quic_send, quic_recv),
                             stream_timeout_ms,
+                            codec.clone(),
                         );
                     });
                 }
