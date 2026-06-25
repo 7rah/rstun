@@ -49,8 +49,16 @@ struct ChildGuard(Child);
 impl ChildGuard {
     fn spawn(args: &[&str]) -> Self {
         let inherit = std::env::var("RSTUN_TEST_LOG").is_ok();
-        let stderr = if inherit { Stdio::inherit() } else { Stdio::null() };
-        let stdout = if inherit { Stdio::inherit() } else { Stdio::null() };
+        let stderr = if inherit {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        };
+        let stdout = if inherit {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        };
         let child = Command::new(RSTUN_BIN)
             .args(args)
             .stdout(stdout)
@@ -196,12 +204,7 @@ fn run_e2e(zstd: bool, http: bool) {
     let server_listen_port = pick_free_port();
     let tcp_mapping_b = format!("IN^{echo_port}^{server_listen_port}");
 
-    let _client_b = ChildGuard::spawn(&client_args(
-        &server_addr,
-        &tcp_mapping_b,
-        zstd,
-        http,
-    ));
+    let _client_b = ChildGuard::spawn(&client_args(&server_addr, &tcp_mapping_b, zstd, http));
 
     // Wait for the server's IN-port TCP listener to become ready.
     wait_for_tcp_port(
@@ -214,12 +217,7 @@ fn run_e2e(zstd: bool, http: bool) {
     let client_a_port = pick_free_port();
     let tcp_mapping_a = format!("OUT^{client_a_port}^127.0.0.1:{server_listen_port}");
 
-    let _client_a = ChildGuard::spawn(&client_args(
-        &server_addr,
-        &tcp_mapping_a,
-        zstd,
-        http,
-    ));
+    let _client_a = ChildGuard::spawn(&client_args(&server_addr, &tcp_mapping_a, zstd, http));
 
     // Wait for ClientA's local TCP listener to become ready.
     wait_for_tcp_port(
@@ -287,12 +285,7 @@ fn run_e2e_http() {
     // --- ClientB (IN) and ClientA (OUT), both with --zstd --http ---
     let server_listen_port = pick_free_port();
     let tcp_mapping_b = format!("IN^{echo_port}^{server_listen_port}");
-    let _client_b = ChildGuard::spawn(&client_args(
-        &server_addr,
-        &tcp_mapping_b,
-        true,
-        true,
-    ));
+    let _client_b = ChildGuard::spawn(&client_args(&server_addr, &tcp_mapping_b, true, true));
 
     wait_for_tcp_port(
         &format!("127.0.0.1:{server_listen_port}"),
@@ -301,12 +294,7 @@ fn run_e2e_http() {
 
     let client_a_port = pick_free_port();
     let tcp_mapping_a = format!("OUT^{client_a_port}^127.0.0.1:{server_listen_port}");
-    let _client_a = ChildGuard::spawn(&client_args(
-        &server_addr,
-        &tcp_mapping_a,
-        true,
-        true,
-    ));
+    let _client_a = ChildGuard::spawn(&client_args(&server_addr, &tcp_mapping_a, true, true));
 
     wait_for_tcp_port(
         &format!("127.0.0.1:{client_a_port}"),
@@ -382,4 +370,3 @@ fn e2e_zstd_tcp_tunnel() {
 fn e2e_zstd_http_tcp_tunnel() {
     run_e2e_http();
 }
-
