@@ -73,6 +73,9 @@ pub struct CodecConfig {
     /// Shared LRU table, lazily initialized on first use.
     lru: Arc<tokio::sync::OnceCell<Arc<CodecLru>>>,
     dict: std::sync::Arc<CodecDict>,
+    /// Optional global aggregator. Per-stream stats are merged into this on
+    /// stream close so the client can report an overall compression ratio.
+    global_stats: Option<Arc<CodecStats>>,
 }
 
 impl Clone for CodecConfig {
@@ -86,6 +89,7 @@ impl Clone for CodecConfig {
             flush_interval_ms: self.flush_interval_ms,
             lru: self.lru.clone(),
             dict: self.dict.clone(),
+            global_stats: self.global_stats.clone(),
         }
     }
 }
@@ -115,6 +119,7 @@ impl Default for CodecConfig {
             flush_interval_ms: 150,
             lru: Arc::new(tokio::sync::OnceCell::new()),
             dict: std::sync::Arc::new(CodecDict::none()),
+            global_stats: None,
         }
     }
 }
@@ -138,6 +143,7 @@ impl CodecConfig {
             flush_interval_ms,
             lru: Arc::new(tokio::sync::OnceCell::new()),
             dict: std::sync::Arc::new(CodecDict::none()),
+            global_stats: None,
         }
     }
     /// Load a dictionary from raw bytes.  Must be called before the first
@@ -146,6 +152,14 @@ impl CodecConfig {
         if !dict.is_empty() {
             self.dict = std::sync::Arc::new(CodecDict::from_bytes(dict, self.level));
         }
+        self
+    }
+
+    /// Attach a global stats aggregator. Per-stream `CodecStats` are merged
+    /// into this on stream close.
+    #[must_use]
+    pub fn with_global_stats(mut self, stats: Arc<CodecStats>) -> Self {
+        self.global_stats = Some(stats);
         self
     }
 
@@ -236,6 +250,7 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         let flush_interval = Duration::from_millis(codec.flush_interval_ms);
         let http_aware = codec.http_aware;
         let stats = Arc::new(CodecStats::default());
+        let global_stats = codec.global_stats.clone();
 
         // Periodic compression stats report (every 10s).
         let stats_for_timer = stats.clone();
@@ -305,10 +320,27 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         let _ = s2q_handle.await;
         let _ = q2s_handle.await;
         timer_handle.abort();
+        let summary = stats.summary();
         info!(
-            "[{tag}] codec stream close id={index}, peer={peer_addr}, {}",
-            stats.summary()
+            "[{tag}] codec stream close id={index}, peer={peer_addr}, {summary}"
         );
+        // Merge per-stream totals into the global aggregator (if attached).
+        if let Some(g) = global_stats {
+            g.up_raw
+                .fetch_add(stats.up_raw.load(Ordering::Relaxed), Ordering::Relaxed);
+            g.up_compressed.fetch_add(
+                stats.up_compressed.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            g.down_compressed.fetch_add(
+                stats.down_compressed.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            g.down_decompressed.fetch_add(
+                stats.down_decompressed.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+        }
     });
 }
 

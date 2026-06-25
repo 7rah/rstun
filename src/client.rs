@@ -124,6 +124,7 @@ pub struct Client {
     traffic_reporter_once: Arc<Once>,
     next_tunnel_id: Arc<AtomicUsize>,
     sni_rotation: Arc<AtomicUsize>,
+    codec_stats: Arc<crate::codec::CodecStats>,
 }
 
 macro_rules! inner_state {
@@ -159,6 +160,7 @@ impl Client {
             traffic_reporter_once: Arc::new(Once::new()),
             next_tunnel_id: Arc::new(AtomicUsize::new(0)),
             sni_rotation: Arc::new(AtomicUsize::new(0)),
+            codec_stats: Arc::new(crate::codec::CodecStats::default()),
         }
     }
 
@@ -1231,11 +1233,13 @@ impl Client {
                 );
             }
         }
+        cfg = cfg.with_global_stats(self.codec_stats.clone());
         cfg
     }
 
     fn report_traffic_data_in_background(&self) {
         let state = self.inner_state.clone();
+        let codec_stats = self.codec_stats.clone();
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(POST_TRAFFIC_DATA_INTERVAL_SECS));
@@ -1282,6 +1286,12 @@ impl Client {
                         crate::human_readable_bytes(stat.cwnd_bytes),
                         stat.current_mtu
                     );
+                }
+                // Aggregate codec compression stats across all streams.
+                let cs = &codec_stats;
+                let up_raw = cs.up_raw.load(Ordering::Relaxed);
+                if up_raw > 0 {
+                    info!("[traffic] codec total, {}", cs.summary());
                 }
                 if event_bus.has_listeners() {
                     event_bus.post(TunnelEvent::new_without_tunnel(
