@@ -49,6 +49,22 @@ pub const TUNNEL_MODE_OUT: &str = "OUT";
 pub const UDP_PACKET_SIZE: usize = 1500;
 /// Read buffer size for stream I/O loops (both compressed and uncompressed paths).
 pub const STREAM_IO_BUFFER_SIZE: usize = 16384;
+
+/// Format a byte count into a human-readable string (KB/MB/GB).
+pub fn human_readable_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * 1024 * 1024;
+    if bytes >= GB {
+        format!("{:.1}GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1}KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes}B")
+    }
+}
 const QUIC_STREAM_RECEIVE_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
 const QUIC_RECEIVE_WINDOW_BYTES: u32 = 64 * 1024 * 1024;
 const QUIC_SEND_WINDOW_BYTES: u64 = 64 * 1024 * 1024;

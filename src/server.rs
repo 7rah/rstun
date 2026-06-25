@@ -38,6 +38,7 @@ struct ConnectedUdpInSession {
 struct State {
     config: ServerConfig,
     endpoint: Option<Endpoint>,
+    connections: Vec<Connection>,
     tcp_sessions: Vec<ConnectedTcpInSession>,
     udp_sessions: Vec<ConnectedUdpInSession>,
 }
@@ -47,6 +48,7 @@ impl State {
         State {
             config,
             endpoint: None,
+            connections: Vec::new(),
             tcp_sessions: Vec::new(),
             udp_sessions: Vec::new(),
         }
@@ -151,6 +153,37 @@ impl Server {
             }
         });
 
+        let state = self.inner_state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let stats = {
+                    let state = state.lock().unwrap();
+                    let mut rx_bytes = 0u64;
+                    let mut tx_bytes = 0u64;
+                    let mut active = 0u32;
+                    for conn in &state.connections {
+                        if conn.close_reason().is_some() {
+                            continue;
+                        }
+                        let s = conn.stats();
+                        rx_bytes += s.udp_rx.bytes;
+                        tx_bytes += s.udp_tx.bytes;
+                        active += 1;
+                    }
+                    (rx_bytes, tx_bytes, active)
+                };
+                info!(
+                    "[traffic] rx={}, tx={}, active_conns={}",
+                    crate::human_readable_bytes(stats.0),
+                    crate::human_readable_bytes(stats.1),
+                    stats.2
+                );
+            }
+        });
+
         let endpoint = inner_state!(self, endpoint).take().context("failed")?;
         while let Some(client_conn) = endpoint.accept().await {
             let state = self.inner_state.clone();
@@ -160,6 +193,16 @@ impl Server {
                     let client_conn = client_conn.await?;
                     let (tun_type, timeouts) =
                         Self::authenticate_connection(&config, client_conn).await?;
+
+                    let conn = match &tun_type {
+                        TunnelType::TcpOut(info) => info.conn.clone(),
+                        TunnelType::TcpIn(info) => info.conn.clone(),
+                        TunnelType::UdpOut(info) => info.conn.clone(),
+                        TunnelType::UdpIn(info) => info.conn.clone(),
+                        TunnelType::DynamicUpstreamTcpOut(conn) => conn.clone(),
+                        TunnelType::DynamicUpstreamUdpOut(conn) => conn.clone(),
+                    };
+                    state.lock().unwrap().connections.push(conn);
 
                     match tun_type {
                         TunnelType::TcpOut(info) => {
@@ -299,7 +342,7 @@ impl Server {
         match TunnelMessage::recv(&mut quic_recv).await? {
             TunnelMessage::ReqLogin(login_info) => {
                 let tunnel_label = login_info.to_string();
-                info!("[{tunnel_label}] login request, remote_addr={remote_addr}");
+                debug!("[{tunnel_label}] login request, remote_addr={remote_addr}");
 
                 Self::check_password(config.password.as_str(), login_info.password.as_str())?;
 
@@ -339,7 +382,7 @@ impl Server {
                     &TunnelMessage::RespSuccess(server_capabilities.clone()),
                 )
                 .await?;
-                info!(
+                debug!(
                     "[{tunnel_label}] authenticated, remote_addr={remote_addr}, ipv6_supported={}",
                     server_capabilities.ipv6_supported
                 );
@@ -496,6 +539,9 @@ impl Server {
 
     fn clear_expired_sessions(state: Arc<Mutex<State>>) {
         let mut state = state.lock().unwrap();
+        state
+            .connections
+            .retain(|conn| conn.close_reason().is_none());
         state.udp_sessions.retain(|sess| {
             if sess.conn.close_reason().is_some() {
                 let sess = sess.clone();

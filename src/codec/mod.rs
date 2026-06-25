@@ -2,15 +2,62 @@ pub mod handshake;
 pub mod http;
 pub mod lru;
 
+use anyhow::Result;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::codec::lru::{CodecDict, CodecLru};
 use crate::tcp::AsyncStream;
 use crate::util::stream_util::StreamUtil;
-use anyhow::Result;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use quinn::{RecvStream, SendStream};
 use std::time::Duration;
+
+/// Per-stream compression statistics, shared between encoder and decoder tasks.
+/// All fields are atomic so they can be updated from separate tokio tasks
+/// without a mutex.
+#[derive(Debug, Default)]
+pub struct CodecStats {
+    /// s2q: raw bytes read from local stream (before compression).
+    pub s2q_raw: AtomicU64,
+    /// s2q: compressed bytes written to QUIC (after compression).
+    pub s2q_compressed: AtomicU64,
+    /// q2s: compressed bytes read from QUIC (before decompression).
+    pub q2s_compressed: AtomicU64,
+    /// q2s: decompressed bytes written to local stream (after decompression).
+    pub q2s_decompressed: AtomicU64,
+}
+
+impl CodecStats {
+    /// Format a one-line summary of the current stats, with human-readable
+    /// byte counts and compression ratios.
+    pub fn summary(&self) -> String {
+        let s2q_raw = self.s2q_raw.load(Ordering::Relaxed);
+        let s2q_comp = self.s2q_compressed.load(Ordering::Relaxed);
+        let q2s_comp = self.q2s_compressed.load(Ordering::Relaxed);
+        let q2s_decomp = self.q2s_decompressed.load(Ordering::Relaxed);
+
+        let s2q_ratio = if s2q_raw > 0 {
+            s2q_comp as f64 / s2q_raw as f64 * 100.0
+        } else {
+            0.0
+        };
+        let q2s_ratio = if q2s_comp > 0 {
+            q2s_decomp as f64 / q2s_comp as f64 * 100.0
+        } else {
+            0.0
+        };
+        format!(
+            "s2q_raw={}, s2q_compressed={}, s2q_ratio={:.1}%, q2s_compressed={}, q2s_decompressed={}, q2s_ratio={:.1}%",
+            crate::human_readable_bytes(s2q_raw),
+            crate::human_readable_bytes(s2q_comp),
+            s2q_ratio,
+            crate::human_readable_bytes(q2s_comp),
+            crate::human_readable_bytes(q2s_decomp),
+            q2s_ratio
+        )
+    }
+}
 
 /// Configuration for the zstd codec middleware.
 ///
@@ -188,9 +235,25 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         let q2s_id = resolved.q2s_id;
         let flush_interval = Duration::from_millis(codec.flush_interval_ms);
         let http_aware = codec.http_aware;
+        let stats = Arc::new(CodecStats::default());
 
+        // Periodic compression stats report (every 10s).
+        let stats_for_timer = stats.clone();
+        let timer_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                debug!(
+                    "[{tag}] codec stats id={index}, {}",
+                    stats_for_timer.summary()
+                );
+            }
+        });
         // s2q task: stream_read → encoder → quic_send
         let lru_for_s2q = lru.clone();
+        let stats_for_s2q = stats.clone();
         let s2q_handle = tokio::spawn(async move {
             let mut stream_read = stream_read;
             let mut quic_send = quic_send;
@@ -203,6 +266,7 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
                 stream_timeout_ms,
                 flush_interval,
                 http_aware,
+                &stats_for_s2q,
             )
             .await;
             // Signal end of stream on the quic send side.
@@ -216,6 +280,7 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
 
         // q2s task: quic_recv → decoder → stream_write
         let lru_for_q2s = lru.clone();
+        let stats_for_q2s = stats.clone();
         let q2s_handle = tokio::spawn(async move {
             let mut quic_recv = quic_recv;
             let mut stream_write = stream_write;
@@ -226,6 +291,7 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
                 &mut stream_write,
                 pair,
                 stream_timeout_ms,
+                &stats_for_q2s,
             )
             .await;
             match result {
@@ -238,13 +304,18 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         // Wait for both directions to finish.
         let _ = s2q_handle.await;
         let _ = q2s_handle.await;
-        debug!("[{tag}] codec stream close id={index}, peer={peer_addr}");
+        timer_handle.abort();
+        info!(
+            "[{tag}] codec stream close id={index}, peer={peer_addr}, {}",
+            stats.summary()
+        );
     });
 }
 
 /// Run the encoder loop: read from `reader`, compress, write to `writer`.
 ///
 /// Returns `Ok(false)` on clean EOF, `Ok(true)` on timeout.
+#[allow(clippy::too_many_arguments)]
 async fn run_encoder<R, W>(
     tag: &str,
     reader: &mut R,
@@ -253,6 +324,7 @@ async fn run_encoder<R, W>(
     stream_timeout_ms: u64,
     flush_interval: Duration,
     http_aware: bool,
+    stats: &CodecStats,
 ) -> Result<bool>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -274,10 +346,13 @@ where
                 Ok(http::HttpReadResult::Message(data)) => {
                     if data.is_empty() {
                         // clean EOF
-                        flush_encoder(&pair, writer).await?;
+                        flush_encoder(&pair, writer, stats).await?;
                         return Ok(false);
                     }
-                    write_compressed(&pair, writer, &data).await?;
+                    stats
+                        .s2q_raw
+                        .fetch_add(data.len() as u64, Ordering::Relaxed);
+                    write_compressed(&pair, writer, &data, stats).await?;
                 }
                 Ok(http::HttpReadResult::NeedMore) => continue,
                 Err(e) => {
@@ -294,11 +369,12 @@ where
                 ) => {
                     match result {
                         Ok(Ok(0)) => {
-                            flush_encoder(&pair, writer).await?;
+                            flush_encoder(&pair, writer, stats).await?;
                             return Ok(false);
                         }
                         Ok(Ok(n)) => {
-                            write_compressed(&pair, writer, &buf[..n]).await?;
+                        stats.s2q_raw.fetch_add(n as u64, Ordering::Relaxed);
+                        write_compressed(&pair, writer, &buf[..n], stats).await?;
                         }
                         Ok(Err(e)) => {
                             warn!("[{tag}] stream read failed, err={e}");
@@ -308,7 +384,7 @@ where
                     }
                 }
                 _ = tokio::time::sleep(flush_interval) => {
-                    flush_encoder(&pair, writer).await?;
+                    flush_encoder(&pair, writer, stats).await?;
                 }
             }
         }
@@ -320,6 +396,7 @@ async fn write_compressed<W>(
     pair: &std::sync::Arc<crate::codec::lru::CodecPair>,
     writer: &mut W,
     data: &[u8],
+    stats: &CodecStats,
 ) -> Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -335,6 +412,9 @@ where
     };
     // Async: write without holding the guard.
     if !produced.is_empty() {
+        stats
+            .s2q_compressed
+            .fetch_add(produced.len() as u64, Ordering::Relaxed);
         writer.write_all(&produced).await?;
     }
     Ok(())
@@ -344,6 +424,7 @@ where
 async fn flush_encoder<W>(
     pair: &std::sync::Arc<crate::codec::lru::CodecPair>,
     writer: &mut W,
+    stats: &CodecStats,
 ) -> Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -357,6 +438,9 @@ where
         std::mem::take(enc.get_mut())
     };
     if !produced.is_empty() {
+        stats
+            .s2q_compressed
+            .fetch_add(produced.len() as u64, Ordering::Relaxed);
         writer.write_all(&produced).await?;
     }
     Ok(())
@@ -369,6 +453,7 @@ async fn run_decoder<R, W>(
     writer: &mut W,
     pair: std::sync::Arc<crate::codec::lru::CodecPair>,
     stream_timeout_ms: u64,
+    stats: &CodecStats,
 ) -> Result<bool>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -394,12 +479,16 @@ where
                     std::mem::take(dec.get_mut())
                 };
                 if !produced.is_empty() {
+                    stats
+                        .q2s_decompressed
+                        .fetch_add(produced.len() as u64, Ordering::Relaxed);
                     writer.write_all(&produced).await?;
                 }
                 writer.shutdown().await?;
                 return Ok(false);
             }
             Ok(Ok(n)) => {
+                stats.q2s_compressed.fetch_add(n as u64, Ordering::Relaxed);
                 let produced = {
                     let mut dec = pair.decoder();
                     dec.write_all(&buf[..n])?;
@@ -407,6 +496,9 @@ where
                     std::mem::take(dec.get_mut())
                 };
                 if !produced.is_empty() {
+                    stats
+                        .q2s_decompressed
+                        .fetch_add(produced.len() as u64, Ordering::Relaxed);
                     writer.write_all(&produced).await?;
                 }
             }

@@ -43,7 +43,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S.%3f";
 const DEFAULT_SERVER_PORT: u16 = 3515;
-const POST_TRAFFIC_DATA_INTERVAL_SECS: u64 = 30;
+const POST_TRAFFIC_DATA_INTERVAL_SECS: u64 = 10;
 const RETRY_BACKOFF_MIN_MS: u64 = 300;
 const CONNECT_TIMEOUT_MIN_SECS: u64 = 3;
 const CONNECT_TIMEOUT_MAX_SECS: u64 = 15;
@@ -1268,18 +1268,18 @@ impl Client {
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
                     info!(
-                        "[traffic] rx_bytes={}, tx_bytes={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost_bytes={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd_bytes={}, current_mtu={}",
-                        stat.rx_bytes,
-                        stat.tx_bytes,
+                        "[traffic] rx={}, tx={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd={}, mtu={}",
+                        crate::human_readable_bytes(stat.rx_bytes),
+                        crate::human_readable_bytes(stat.tx_bytes),
                         stat.rx_dgrams,
                         stat.tx_dgrams,
                         stat.sent_packets,
                         stat.lost_packets,
-                        stat.lost_bytes,
+                        crate::human_readable_bytes(stat.lost_bytes),
                         stat.congestion_events,
                         stat.active_conns,
                         stat.rtt_ms,
-                        stat.cwnd_bytes,
+                        crate::human_readable_bytes(stat.cwnd_bytes),
                         stat.current_mtu
                     );
                 }
