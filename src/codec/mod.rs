@@ -353,6 +353,11 @@ where
                         .s2q_raw
                         .fetch_add(data.len() as u64, Ordering::Relaxed);
                     write_compressed(&pair, writer, &data, stats).await?;
+                    // HTTP mode has no flush_interval timer (unlike basic mode),
+                    // so flush explicitly after each complete message to ensure
+                    // small requests/responses are emitted immediately rather
+                    // than buffered indefinitely in the zstd encoder.
+                    flush_encoder(&pair, writer, stats).await?;
                 }
                 Ok(http::HttpReadResult::NeedMore) => continue,
                 Err(e) => {
