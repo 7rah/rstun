@@ -5,9 +5,9 @@ use crate::tunnel_message::{ServerCapabilities, TunnelMessage};
 use crate::udp::udp_server::{UdpMessage, UdpSender};
 use crate::udp::{udp_server::UdpServer, udp_tunnel::UdpTunnel};
 use crate::{
-    SUPPORTED_CIPHER_SUITES, ServerConfig, TcpServer, TcpTunnelInInfo, TcpTunnelOutInfo,
-    TimeoutConfig, Tunnel, TunnelConfig, TunnelMode, TunnelType, UdpTunnelInInfo, UdpTunnelOutInfo,
-    UpstreamType, build_quic_transport_config, pem_util,
+    ServerConfig, TcpServer, TcpTunnelInInfo, TcpTunnelOutInfo, TimeoutConfig, Tunnel,
+    TunnelConfig, TunnelMode, TunnelType, UdpTunnelInInfo, UdpTunnelOutInfo, UpstreamType,
+    build_quic_transport_config, pem_util,
 };
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
@@ -117,11 +117,7 @@ impl Server {
             Self::read_certs_and_key(config.cert_path.as_str(), config.key_path.as_str())
                 .context("failed to read certificate or key")?;
 
-        let default_provider = rustls::crypto::ring::default_provider();
-        let provider = rustls::crypto::CryptoProvider {
-            cipher_suites: SUPPORTED_CIPHER_SUITES.into(),
-            ..default_provider
-        };
+        let provider = rustls::crypto::ring::default_provider();
 
         let tls_server_cfg = rustls::ServerConfig::builder_with_provider(provider.into())
             .with_protocol_versions(&[&rustls::version::TLS13])

@@ -25,7 +25,6 @@ fn run_client(args: ClientArgs) {
         &args.server_addr,
         &args.password,
         &args.cert,
-        &args.cipher,
         &args.tcp_mappings,
         &args.udp_mappings,
         &args.dot,
@@ -215,11 +214,6 @@ struct ClientArgs {
     /// Path to the certificate file (only needed for self-signed certificates)
     #[arg(short = 'c', long, default_value = "", hide_default_value = true)]
     cert: String,
-
-    /// Preferred cipher suite
-    #[arg(short = 'e', long, default_value_t = String::from(SUPPORTED_CIPHER_SUITE_STRS[0]),
-        value_parser = PossibleValuesParser::new(SUPPORTED_CIPHER_SUITE_STRS).map(|v| v.to_string()))]
-    cipher: String,
 
     /// Number of async worker threads [uses all logical CPUs if 0]
     #[arg(short = 'w', long, default_value_t = 0)]

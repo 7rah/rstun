@@ -18,7 +18,6 @@ use lazy_static::lazy_static;
 use log::warn;
 use quinn::{IdleTimeout, TransportConfig, VarInt, congestion};
 use rs_utilities::log_and_bail;
-use rustls::crypto::ring::cipher_suite;
 use serde::Deserialize;
 use serde::Serialize;
 pub use server::Server;
@@ -30,7 +29,7 @@ use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::pin::Pin;
 use std::time::Duration;
-use std::{net::SocketAddr, ops::Deref, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 pub use tcp::tcp_server::TcpServer;
 pub use tcp::{AsyncStream, StreamMessage, StreamReceiver, StreamRequest, StreamSender};
 use tokio::net::TcpStream;
@@ -120,71 +119,8 @@ pub(crate) fn build_quic_transport_config(
     transport_cfg
 }
 
-pub const SUPPORTED_CIPHER_SUITE_STRS: &[&str] = &[
-    "chacha20-poly1305",
-    "aes-256-gcm",
-    "aes-128-gcm",
-    // the following ciphers don't work at the moement, will look into it later
-    // "ecdhe-ecdsa-aes256-gcm",
-    // "ecdhe-ecdsa-aes128-gcm",
-    // "ecdhe-ecdsa-chacha20-poly1305",
-    // "ecdhe-rsa-aes256-gcm",
-    // "ecdhe-rsa-aes128-gcm",
-    // "ecdhe-rsa-chacha20-poly1305",
-];
-
-pub static SUPPORTED_CIPHER_SUITES: &[rustls::SupportedCipherSuite] = &[
-    cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-    cipher_suite::TLS13_AES_256_GCM_SHA384,
-    cipher_suite::TLS13_AES_128_GCM_SHA256,
-];
-
 pub(crate) fn format_optional_socket_addr(addr: Option<SocketAddr>) -> String {
     addr.map_or_else(|| String::from("none"), |addr| addr.to_string())
-}
-
-pub(crate) struct SelectedCipherSuite(rustls::SupportedCipherSuite);
-
-impl std::str::FromStr for SelectedCipherSuite {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "chacha20-poly1305" => Ok(SelectedCipherSuite(
-                cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-            )),
-            "aes-256-gcm" => Ok(SelectedCipherSuite(cipher_suite::TLS13_AES_256_GCM_SHA384)),
-            "aes-128-gcm" => Ok(SelectedCipherSuite(cipher_suite::TLS13_AES_128_GCM_SHA256)),
-            // "ecdhe-ecdsa-aes256-gcm" => Ok(SelectedCipherSuite(
-            //     rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-            // )),
-            // "ecdhe-ecdsa-aes128-gcm" => Ok(SelectedCipherSuite(
-            //     rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            // )),
-            // "ecdhe-ecdsa-chacha20-poly1305" => Ok(SelectedCipherSuite(
-            //     rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-            // )),
-            // "ecdhe-rsa-aes256-gcm" => Ok(SelectedCipherSuite(
-            //     rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            // )),
-            // "ecdhe-rsa-aes128-gcm" => Ok(SelectedCipherSuite(
-            //     rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            // )),
-            // "ecdhe-rsa-chacha20-poly1305" => Ok(SelectedCipherSuite(
-            //     rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-            // )),
-            _ => Ok(SelectedCipherSuite(
-                cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-            )),
-        }
-    }
-}
-
-impl Deref for SelectedCipherSuite {
-    type Target = rustls::SupportedCipherSuite;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 #[derive(Debug)]
@@ -288,7 +224,6 @@ pub(crate) enum Tunnel {
 #[derive(Debug, Default, Clone)]
 pub struct ClientConfig {
     pub cert_path: String,
-    pub cipher: String,
     pub server_addr: String,
     pub password: String,
     pub wait_before_retry_ms: u64,
@@ -490,7 +425,6 @@ impl ClientConfig {
         server_addr: &str,
         password: &str,
         cert: &str,
-        cipher: &str,
         tcp_mappings: &str,
         udp_mappings: &str,
         dot: &str,
@@ -548,7 +482,6 @@ impl ClientConfig {
 
         let mut config = ClientConfig {
             cert_path: cert.to_string(),
-            cipher: cipher.to_string(),
             server_addr: if !server_addr.contains(':') {
                 format!("127.0.0.1:{server_addr}")
             } else {
@@ -734,7 +667,6 @@ pub mod android {
         jsniNames: JString,
         jpassword: JString,
         jcertFilePath: JString,
-        jcipher: JString,
         jworkers: jint,
         jwaitBeforeRetryMs: jint,
         jquicTimeoutMs: jint,
@@ -748,13 +680,10 @@ pub mod android {
         let sni_names = convert_jstring(&mut env, jsniNames);
         let password = convert_jstring(&mut env, jpassword);
         let cert_file_path = convert_jstring(&mut env, jcertFilePath);
-        let cipher = convert_jstring(&mut env, jcipher);
-
         match ClientConfig::create(
             &server_addr,
             &password,
             &cert_file_path,
-            &cipher,
             &tcp_mappings,
             &udp_mappings,
             &dot_server,

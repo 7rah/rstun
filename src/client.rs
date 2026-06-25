@@ -1,6 +1,6 @@
 use crate::{
-    ClientConfig, LoginInfo, SelectedCipherSuite, TcpServer, Tunnel, TunnelConfig, TunnelMode,
-    UpstreamType, build_quic_transport_config,
+    ClientConfig, LoginInfo, TcpServer, Tunnel, TunnelConfig, TunnelMode, UpstreamType,
+    build_quic_transport_config,
     heartbeat::{self, HeartbeatConfig},
     pem_util, socket_addr_with_unspecified_ip_port,
     tcp::{AsyncStream, StreamReceiver, StreamRequest, tcp_tunnel::TcpTunnel},
@@ -19,11 +19,7 @@ use quinn::{Connection, Endpoint, VarInt, crypto::rustls::QuicClientConfig};
 use rs_utilities::dns::{self, DNSQueryOrdering, DNSResolverConfig, DNSResolverLookupIpStrategy};
 use rs_utilities::log_and_bail;
 use rs_utilities::net;
-use rustls::{
-    RootCertStore, SupportedCipherSuite,
-    client::danger::ServerCertVerified,
-    crypto::{CryptoProvider, ring::cipher_suite},
-};
+use rustls::{RootCertStore, client::danger::ServerCertVerified, crypto::CryptoProvider};
 use rustls_platform_verifier::{self, BuilderVerifierExt, Verifier as PlatformVerifier};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -31,7 +27,6 @@ use std::{
     fmt::Display,
     future::Future,
     net::{IpAddr, SocketAddr},
-    str::FromStr,
     sync::{
         Arc, Mutex, MutexGuard, Once,
         atomic::{AtomicUsize, Ordering},
@@ -780,12 +775,11 @@ impl Client {
         self.post_tunnel_log(
             tunnel,
             format!(
-                "{} connecting, idle_timeout={}, retry_timeout={}, connect_timeout={}, cipher={}, threads={}",
+                "{} connecting, idle_timeout={}, retry_timeout={}, connect_timeout={}, threads={}",
                 login_info.format_with_remote_addr(remote_addr),
                 self.config.quic_timeout_ms,
                 self.retry_max_backoff_delay().as_millis(),
                 connect_timeout.as_millis(),
-                self.config.cipher,
                 self.config.workers,
             )
             .as_str(),
@@ -1312,36 +1306,23 @@ impl Client {
         });
     }
 
-    fn get_crypto_provider(&self, cipher: &SupportedCipherSuite) -> Arc<CryptoProvider> {
-        let default_provider = rustls::crypto::ring::default_provider();
-        let mut cipher_suites = vec![*cipher];
-        // Quinn assumes that the cipher suites contain this one
-        cipher_suites.push(cipher_suite::TLS13_AES_128_GCM_SHA256);
-        Arc::new(rustls::crypto::CryptoProvider {
-            cipher_suites,
-            ..default_provider
-        })
+    fn get_crypto_provider(&self) -> Arc<CryptoProvider> {
+        Arc::new(rustls::crypto::ring::default_provider())
     }
 
     fn create_client_config_builder(
         &self,
-        cipher: &SupportedCipherSuite,
     ) -> std::result::Result<
         rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier>,
         rustls::Error,
     > {
-        let cfg_builder =
-            rustls::ClientConfig::builder_with_provider(self.get_crypto_provider(cipher))
-                .with_protocol_versions(&[&rustls::version::TLS13])
-                .unwrap();
+        let cfg_builder = rustls::ClientConfig::builder_with_provider(self.get_crypto_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap();
         Ok(cfg_builder)
     }
 
     fn parse_client_config_and_domain(&self) -> Result<(rustls::ClientConfig, String)> {
-        let cipher = *SelectedCipherSuite::from_str(&self.config.cipher).map_err(|_| {
-            rustls::Error::General(format!("invalid cipher: {}", self.config.cipher))
-        })?;
-
         if self.config.cert_path.is_empty() {
             if !Self::is_ip_addr(&self.config.server_addr) {
                 let domain = match self.config.server_addr.rfind(':') {
@@ -1349,12 +1330,12 @@ impl Client {
                     None => self.config.server_addr.to_string(),
                 };
 
-                let builder = self.create_client_config_builder(&cipher)?;
+                let builder = self.create_client_config_builder()?;
                 let client_config = if self.config.sni_names.is_empty() {
                     builder.with_platform_verifier()?.with_no_client_auth()
                 } else {
                     let inner: Arc<dyn rustls::client::danger::ServerCertVerifier> =
-                        Arc::new(PlatformVerifier::new(self.get_crypto_provider(&cipher))?);
+                        Arc::new(PlatformVerifier::new(self.get_crypto_provider())?);
                     self.wrap_with_custom_sni_verifier(builder, inner, &domain)?
                 };
 
@@ -1362,10 +1343,10 @@ impl Client {
             }
 
             let client_config = self
-                .create_client_config_builder(&cipher)?
+                .create_client_config_builder()?
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier::new(
-                    self.get_crypto_provider(&cipher),
+                    self.get_crypto_provider(),
                 )))
                 .with_no_client_auth();
 
@@ -1400,13 +1381,13 @@ impl Client {
             None => self.config.server_addr.to_string(),
         };
 
-        let builder = self.create_client_config_builder(&cipher)?;
+        let builder = self.create_client_config_builder()?;
         let client_config = if self.config.sni_names.is_empty() {
             builder.with_root_certificates(roots).with_no_client_auth()
         } else {
             let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
                 Arc::new(roots),
-                self.get_crypto_provider(&cipher),
+                self.get_crypto_provider(),
             )
             .build()
             .context("failed to build certificate verifier")?;
@@ -1734,7 +1715,6 @@ impl rustls::client::danger::ServerCertVerifier for CustomSniVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SUPPORTED_CIPHER_SUITE_STRS;
     use rustls::client::danger::ServerCertVerifier as _;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1825,8 +1805,6 @@ mod tests {
     fn event_listener_receives_tunnel_state() {
         let config = ClientConfig {
             cert_path: "".to_string(),
-            cipher: SUPPORTED_CIPHER_SUITE_STRS[0].to_string(),
-            server_addr: "127.0.0.1:3515".to_string(),
             password: "pass".to_string(),
             wait_before_retry_ms: 1000,
             quic_timeout_ms: 1000,
@@ -1867,7 +1845,7 @@ mod tests {
     #[tokio::test]
     async fn connect_failure_posts_tunnel_log_event() {
         let mut client = Client::new(ClientConfig {
-            cipher: "invalid-cipher".to_string(),
+            server_addr: "127.0.0.1:1".to_string(), // unbindable port
             ..ClientConfig::default()
         });
         let receiver = client.register_for_events();
@@ -1886,7 +1864,7 @@ mod tests {
         client
             .connect_once(&descriptor, &login_info, Duration::from_millis(1))
             .await
-            .expect_err("invalid cipher should fail before connecting");
+            .expect_err("connection to unbindable port should fail");
 
         for _ in 0..3 {
             let event = receiver
@@ -1906,7 +1884,6 @@ mod tests {
     fn event_listener_receives_tunnel_stat() {
         let config = ClientConfig {
             cert_path: "".to_string(),
-            cipher: SUPPORTED_CIPHER_SUITE_STRS[0].to_string(),
             server_addr: "127.0.0.1:3515".to_string(),
             password: "pass".to_string(),
             wait_before_retry_ms: 1000,
