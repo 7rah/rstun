@@ -18,43 +18,43 @@ use std::time::Duration;
 /// without a mutex.
 #[derive(Debug, Default)]
 pub struct CodecStats {
-    /// s2q: raw bytes read from local stream (before compression).
-    pub s2q_raw: AtomicU64,
-    /// s2q: compressed bytes written to QUIC (after compression).
-    pub s2q_compressed: AtomicU64,
-    /// q2s: compressed bytes read from QUIC (before decompression).
-    pub q2s_compressed: AtomicU64,
-    /// q2s: decompressed bytes written to local stream (after decompression).
-    pub q2s_decompressed: AtomicU64,
+    /// up: raw bytes read from local stream (before compression).
+    pub up_raw: AtomicU64,
+    /// up: compressed bytes written to QUIC (after compression).
+    pub up_compressed: AtomicU64,
+    /// down: compressed bytes read from QUIC (before decompression).
+    pub down_compressed: AtomicU64,
+    /// down: decompressed bytes written to local stream (after decompression).
+    pub down_decompressed: AtomicU64,
 }
 
 impl CodecStats {
     /// Format a one-line summary of the current stats, with human-readable
     /// byte counts and compression ratios.
     pub fn summary(&self) -> String {
-        let s2q_raw = self.s2q_raw.load(Ordering::Relaxed);
-        let s2q_comp = self.s2q_compressed.load(Ordering::Relaxed);
-        let q2s_comp = self.q2s_compressed.load(Ordering::Relaxed);
-        let q2s_decomp = self.q2s_decompressed.load(Ordering::Relaxed);
+        let up_raw = self.up_raw.load(Ordering::Relaxed);
+        let up_comp = self.up_compressed.load(Ordering::Relaxed);
+        let down_comp = self.down_compressed.load(Ordering::Relaxed);
+        let down_decomp = self.down_decompressed.load(Ordering::Relaxed);
 
-        let s2q_ratio = if s2q_raw > 0 {
-            s2q_comp as f64 / s2q_raw as f64 * 100.0
+        let up_ratio = if up_raw > 0 {
+            up_comp as f64 / up_raw as f64 * 100.0
         } else {
             0.0
         };
-        let q2s_ratio = if q2s_comp > 0 {
-            q2s_decomp as f64 / q2s_comp as f64 * 100.0
+        let down_ratio = if down_decomp > 0 {
+            down_comp as f64 / down_decomp as f64 * 100.0
         } else {
             0.0
         };
         format!(
-            "s2q_raw={}, s2q_compressed={}, s2q_ratio={:.1}%, q2s_compressed={}, q2s_decompressed={}, q2s_ratio={:.1}%",
-            crate::human_readable_bytes(s2q_raw),
-            crate::human_readable_bytes(s2q_comp),
-            s2q_ratio,
-            crate::human_readable_bytes(q2s_comp),
-            crate::human_readable_bytes(q2s_decomp),
-            q2s_ratio
+            "up_raw={}, up_compressed={}, up_ratio={:.1}%, down_compressed={}, down_decompressed={}, down_ratio={:.1}%",
+            crate::human_readable_bytes(up_raw),
+            crate::human_readable_bytes(up_comp),
+            up_ratio,
+            crate::human_readable_bytes(down_comp),
+            crate::human_readable_bytes(down_decomp),
+            down_ratio
         )
     }
 }
@@ -350,7 +350,7 @@ where
                         return Ok(false);
                     }
                     stats
-                        .s2q_raw
+                        .up_raw
                         .fetch_add(data.len() as u64, Ordering::Relaxed);
                     write_compressed(&pair, writer, &data, stats).await?;
                     // HTTP mode has no flush_interval timer (unlike basic mode),
@@ -378,7 +378,7 @@ where
                             return Ok(false);
                         }
                         Ok(Ok(n)) => {
-                        stats.s2q_raw.fetch_add(n as u64, Ordering::Relaxed);
+                        stats.up_raw.fetch_add(n as u64, Ordering::Relaxed);
                         write_compressed(&pair, writer, &buf[..n], stats).await?;
                         }
                         Ok(Err(e)) => {
@@ -418,7 +418,7 @@ where
     // Async: write without holding the guard.
     if !produced.is_empty() {
         stats
-            .s2q_compressed
+            .up_compressed
             .fetch_add(produced.len() as u64, Ordering::Relaxed);
         writer.write_all(&produced).await?;
     }
@@ -444,7 +444,7 @@ where
     };
     if !produced.is_empty() {
         stats
-            .s2q_compressed
+            .up_compressed
             .fetch_add(produced.len() as u64, Ordering::Relaxed);
         writer.write_all(&produced).await?;
     }
@@ -485,7 +485,7 @@ where
                 };
                 if !produced.is_empty() {
                     stats
-                        .q2s_decompressed
+                        .down_decompressed
                         .fetch_add(produced.len() as u64, Ordering::Relaxed);
                     writer.write_all(&produced).await?;
                 }
@@ -493,7 +493,7 @@ where
                 return Ok(false);
             }
             Ok(Ok(n)) => {
-                stats.q2s_compressed.fetch_add(n as u64, Ordering::Relaxed);
+                stats.down_compressed.fetch_add(n as u64, Ordering::Relaxed);
                 let produced = {
                     let mut dec = pair.decoder();
                     dec.write_all(&buf[..n])?;
@@ -502,7 +502,7 @@ where
                 };
                 if !produced.is_empty() {
                     stats
-                        .q2s_decompressed
+                        .down_decompressed
                         .fetch_add(produced.len() as u64, Ordering::Relaxed);
                     writer.write_all(&produced).await?;
                 }
