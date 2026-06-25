@@ -1268,7 +1268,7 @@ impl Client {
                 let timestamp = chrono::Local::now().format(TIME_FORMAT).to_string();
                 if log_enabled!(Level::Info) {
                     info!(
-                        "[traffic] rx={}, tx={}, rx_dgrams={}, tx_dgrams={}, sent_packets={}, lost_packets={}, lost={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd={}, mtu={}",
+                        "[traffic] down={}, up={}, down_dgrams={}, up_dgrams={}, sent_packets={}, lost_packets={}, lost={}, congestion_events={}, active_conns={}, rtt_ms={}, cwnd={}, mtu={}",
                         crate::human_readable_bytes(stat.rx_bytes),
                         crate::human_readable_bytes(stat.tx_bytes),
                         stat.rx_dgrams,

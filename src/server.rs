@@ -176,7 +176,7 @@ impl Server {
                     (rx_bytes, tx_bytes, active)
                 };
                 info!(
-                    "[traffic] rx={}, tx={}, active_conns={}",
+                    "[traffic] down={}, up={}, active_conns={}",
                     crate::human_readable_bytes(stats.0),
                     crate::human_readable_bytes(stats.1),
                     stats.2
