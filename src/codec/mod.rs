@@ -47,14 +47,26 @@ impl CodecStats {
         } else {
             0.0
         };
+        // Bandwidth saved by compression on the upload (s2q) direction.
+        let saved = up_raw.saturating_sub(up_comp);
+        // Combined compression ratio across both directions.
+        let total_in = up_raw + down_decomp;
+        let total_out = up_comp + down_comp;
+        let overall = if total_in > 0 {
+            total_out as f64 / total_in as f64 * 100.0
+        } else {
+            0.0
+        };
         format!(
-            "up_raw={}, up_compressed={}, up_ratio={:.1}%, down_compressed={}, down_decompressed={}, down_ratio={:.1}%",
+            "up_raw={}, up_compressed={}, up_ratio={:.1}%, down_compressed={}, down_decompressed={}, down_ratio={:.1}%, saved={}, overall={:.1}%",
             crate::human_readable_bytes(up_raw),
             crate::human_readable_bytes(up_comp),
             up_ratio,
             crate::human_readable_bytes(down_comp),
             crate::human_readable_bytes(down_decomp),
-            down_ratio
+            down_ratio,
+            crate::human_readable_bytes(saved),
+            overall,
         )
     }
 }
