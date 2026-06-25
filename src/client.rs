@@ -1217,6 +1217,7 @@ impl Client {
             self.config.zstd,
             self.config.http,
             self.config.zstd_level,
+            self.config.zstd_window_log,
             self.config.zstd_pair_ttl_secs,
             self.config.zstd_flush_interval_ms,
         );

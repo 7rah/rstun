@@ -4,10 +4,10 @@
 //! encoder → wire → decoder pipeline, using real traffic samples
 //! captured from the gpu machine.
 
-use rstun::codec::lru::{CodecDict, CodecLru, LookupResult};
 use rstun::codec::handshake::PAIR_ID_SIZE;
+use rstun::codec::lru::{CodecDict, CodecLru, LookupResult};
 use std::sync::Arc;
-use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
 /// Simulate a full codec round-trip: two CodecLru tables (A and B),
 /// handshake over a duplex stream, then pump data through encoder→wire→decoder.
@@ -30,8 +30,8 @@ async fn codec_roundtrip(data: &[u8], use_dict: bool) {
         CodecDict::none()
     };
 
-    let lru_a = Arc::new(CodecLru::new(256, Arc::new(dict_a), 3, 3600).unwrap());
-    let lru_b = Arc::new(CodecLru::new(256, Arc::new(dict_b), 3, 3600).unwrap());
+    let lru_a = Arc::new(CodecLru::new(256, Arc::new(dict_a), 3, 0, 3600).unwrap());
+    let lru_b = Arc::new(CodecLru::new(256, Arc::new(dict_b), 3, 0, 3600).unwrap());
 
     let (mut a_send, mut b_recv) = duplex(65536);
     let (mut b_send, mut a_recv) = duplex(65536);
@@ -77,7 +77,10 @@ async fn codec_roundtrip(data: &[u8], use_dict: bool) {
         std::mem::take(enc.get_mut())
     };
 
-    assert!(!compressed.is_empty(), "compressed data should not be empty");
+    assert!(
+        !compressed.is_empty(),
+        "compressed data should not be empty"
+    );
 
     a_send.write_all(&compressed).await.unwrap();
     a_send.flush().await.unwrap();
@@ -124,7 +127,7 @@ async fn roundtrip_empty_data() {
 
 #[tokio::test]
 async fn roundtrip_pair_reuse_after_checkin() {
-    let lru = Arc::new(CodecLru::new(256, Arc::new(CodecDict::none()), 3, 3600).unwrap());
+    let lru = Arc::new(CodecLru::new(256, Arc::new(CodecDict::none()), 3, 0, 3600).unwrap());
 
     let (id1, pair1) = lru.checkout().unwrap();
     assert_ne!(id1, 0, "fresh pair should have non-zero random id");
@@ -222,7 +225,7 @@ async fn roundtrip_multiple_http_messages_keep_alive() {
 
 #[tokio::test]
 async fn roundtrip_errored_pair_skipped_on_checkout() {
-    let lru = Arc::new(CodecLru::new(256, Arc::new(CodecDict::none()), 3, 3600).unwrap());
+    let lru = Arc::new(CodecLru::new(256, Arc::new(CodecDict::none()), 3, 0, 3600).unwrap());
 
     let (id, pair) = lru.checkout().unwrap();
     pair.mark_errored();

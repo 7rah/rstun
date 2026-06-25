@@ -88,7 +88,9 @@ pub async fn exchange_pair_id(
     // If we got a Miss, reset our decoder so it starts fresh — matching
     // the remote's fresh encoder.
     if q2s_ack == 0 {
-        q2s_pair.reset_decoder().context("failed to reset decoder")?;
+        q2s_pair
+            .reset_decoder()
+            .context("failed to reset decoder")?;
     }
 
     let ack_bytes = q2s_ack.to_be_bytes();

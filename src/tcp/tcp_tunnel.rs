@@ -31,7 +31,13 @@ impl TcpTunnel {
             )
             .await
         } else {
-            Self::start_accepting(conn, None, stream_timeout_ms, crate::codec::CodecConfig::default()).await
+            Self::start_accepting(
+                conn,
+                None,
+                stream_timeout_ms,
+                crate::codec::CodecConfig::default(),
+            )
+            .await
         }
     }
 
@@ -90,7 +96,8 @@ impl TcpTunnel {
         stream_timeout_ms: u64,
         codec: crate::codec::CodecConfig,
     ) -> Result<()> {
-        Self::start_accepting_with_connector(conn, upstream_addr, stream_timeout_ms, None, codec).await
+        Self::start_accepting_with_connector(conn, upstream_addr, stream_timeout_ms, None, codec)
+            .await
     }
 
     pub async fn start_accepting_with_connector(

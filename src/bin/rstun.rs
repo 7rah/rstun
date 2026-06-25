@@ -42,6 +42,7 @@ fn run_client(args: ClientArgs) {
         args.zstd,
         args.http,
         args.zstd_level,
+        args.zstd_window_log,
         &args.zstd_dict,
         args.zstd_pair_ttl_secs,
         args.zstd_flush_interval_ms,
@@ -291,8 +292,11 @@ struct ClientArgs {
     http: bool,
 
     /// zstd compression level (1-22).
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 9)]
     zstd_level: i32,
+    /// zstd window log (0 = follow level default; 10-31 = explicit 2^n window size).
+    #[arg(long, default_value_t = 24)]
+    zstd_window_log: u32,
 
     /// Path to a zstd dictionary file (optional, improves compression for small/similar data).
     #[arg(long, default_value = "", hide_default_value = true)]
@@ -302,7 +306,7 @@ struct ClientArgs {
     #[arg(long, default_value_t = 0)]
     zstd_pair_ttl_secs: u64,
 
-    /// Flush interval for drain mode in milliseconds (0 = use default 50ms).
+    /// Flush interval for drain mode in milliseconds (0 = use default 150ms).
     #[arg(long, default_value_t = 0)]
     zstd_flush_interval_ms: u64,
 

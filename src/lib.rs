@@ -1,4 +1,5 @@
 mod client;
+pub mod codec;
 mod heartbeat;
 mod pem_util;
 mod server;
@@ -8,7 +9,6 @@ mod tunnel_event_bus;
 mod tunnel_message;
 mod udp;
 mod util;
-pub mod codec;
 
 use anyhow::{Context, Result};
 use byte_pool::BytePool;
@@ -47,6 +47,8 @@ extern crate pretty_env_logger;
 pub const TUNNEL_MODE_IN: &str = "IN";
 pub const TUNNEL_MODE_OUT: &str = "OUT";
 pub const UDP_PACKET_SIZE: usize = 1500;
+/// Read buffer size for stream I/O loops (both compressed and uncompressed paths).
+pub const STREAM_IO_BUFFER_SIZE: usize = 16384;
 const QUIC_STREAM_RECEIVE_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
 const QUIC_RECEIVE_WINDOW_BYTES: u32 = 64 * 1024 * 1024;
 const QUIC_SEND_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
@@ -294,8 +296,10 @@ pub struct ClientConfig {
     /// Enable HTTP-aware compression (requires zstd). Parses HTTP/1.x
     /// messages and flushes at message boundaries when Content-Length is present.
     pub http: bool,
-    /// zstd compression level (1-22, default 3).
+    /// zstd compression level (1-22, default 9).
     pub zstd_level: i32,
+    /// zstd window log (0 = follow level default; 10-31 = explicit 2^n window, default 24 = 16MB).
+    pub zstd_window_log: u32,
     /// Path to a zstd dictionary file (optional).
     pub zstd_dict: String,
     /// Codec pair TTL in seconds (idle pairs are evicted after this duration).
@@ -487,6 +491,7 @@ impl ClientConfig {
         zstd: bool,
         http: bool,
         zstd_level: i32,
+        zstd_window_log: u32,
         zstd_dict: &str,
         zstd_pair_ttl_secs: u64,
         zstd_flush_interval_ms: u64,
@@ -550,9 +555,18 @@ impl ClientConfig {
             zstd,
             http,
             zstd_level,
+            zstd_window_log,
             zstd_dict: zstd_dict.to_string(),
-            zstd_pair_ttl_secs: if zstd_pair_ttl_secs == 0 { 5 * 3600 } else { zstd_pair_ttl_secs },
-            zstd_flush_interval_ms: if zstd_flush_interval_ms == 0 { 50 } else { zstd_flush_interval_ms },
+            zstd_pair_ttl_secs: if zstd_pair_ttl_secs == 0 {
+                5 * 3600
+            } else {
+                zstd_pair_ttl_secs
+            },
+            zstd_flush_interval_ms: if zstd_flush_interval_ms == 0 {
+                150
+            } else {
+                zstd_flush_interval_ms
+            },
             dot_servers: dot.split(',').map(|s| s.to_string()).collect(),
             dns_servers: dns.split(',').map(|s| s.to_string()).collect(),
             ..ClientConfig::default()

@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
-use tokio::io::{AsyncRead, AsyncReadExt};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Maximum HTTP header size we'll buffer before giving up.
 const MAX_HEADER_SIZE: usize = 64 * 1024;
@@ -209,11 +209,14 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{duplex, AsyncWriteExt};
+    use tokio::io::{AsyncWriteExt, duplex};
 
     #[test]
     fn find_header_end_basic() {
-        assert_eq!(find_header_end(b"GET / HTTP/1.1\r\nHost: x\r\n\r\nbody"), Some(27));
+        assert_eq!(
+            find_header_end(b"GET / HTTP/1.1\r\nHost: x\r\n\r\nbody"),
+            Some(27)
+        );
         assert_eq!(find_header_end(b"no headers here"), None);
     }
 

@@ -56,11 +56,10 @@ impl StreamUtil {
 
         let (quic_to_stream_tx, quic_to_stream_rx) = oneshot::channel::<()>();
         let (stream_to_quic_tx, stream_to_quic_rx) = oneshot::channel::<()>();
-        const BUFFER_SIZE: usize = 8192;
 
         tokio::spawn(async move {
             let mut transfer_bytes = 0u64;
-            let mut buffer = BUFFER_POOL.alloc_and_fill(BUFFER_SIZE);
+            let mut buffer = BUFFER_POOL.alloc_and_fill(crate::STREAM_IO_BUFFER_SIZE);
             loop {
                 let result = Self::quic_to_stream(
                     &mut quic_recv,
@@ -95,7 +94,7 @@ impl StreamUtil {
 
         tokio::spawn(async move {
             let mut transfer_bytes = 0u64;
-            let mut buffer = BUFFER_POOL.alloc_and_fill(BUFFER_SIZE);
+            let mut buffer = BUFFER_POOL.alloc_and_fill(crate::STREAM_IO_BUFFER_SIZE);
             loop {
                 let result = Self::stream_to_quic(
                     &mut stream_read,

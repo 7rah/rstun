@@ -20,6 +20,7 @@ pub struct CodecConfig {
     pub enabled: bool,
     pub http_aware: bool,
     pub level: i32,
+    pub window_log: u32,
     pub pair_ttl_secs: u64,
     pub flush_interval_ms: u64,
     /// Shared LRU table, lazily initialized on first use.
@@ -33,6 +34,7 @@ impl Clone for CodecConfig {
             enabled: self.enabled,
             http_aware: self.http_aware,
             level: self.level,
+            window_log: self.window_log,
             pair_ttl_secs: self.pair_ttl_secs,
             flush_interval_ms: self.flush_interval_ms,
             lru: self.lru.clone(),
@@ -47,6 +49,7 @@ impl std::fmt::Debug for CodecConfig {
             .field("enabled", &self.enabled)
             .field("http_aware", &self.http_aware)
             .field("level", &self.level)
+            .field("window_log", &self.window_log)
             .field("pair_ttl_secs", &self.pair_ttl_secs)
             .field("flush_interval_ms", &self.flush_interval_ms)
             .field("has_dict", &!self.dict.is_empty())
@@ -59,9 +62,10 @@ impl Default for CodecConfig {
         CodecConfig {
             enabled: false,
             http_aware: false,
-            level: 3,
+            level: 9,
+            window_log: 24,
             pair_ttl_secs: 5 * 3600,
-            flush_interval_ms: 50,
+            flush_interval_ms: 150,
             lru: Arc::new(tokio::sync::OnceCell::new()),
             dict: std::sync::Arc::new(CodecDict::none()),
         }
@@ -74,6 +78,7 @@ impl CodecConfig {
         enabled: bool,
         http_aware: bool,
         level: i32,
+        window_log: u32,
         pair_ttl_secs: u64,
         flush_interval_ms: u64,
     ) -> Self {
@@ -81,6 +86,7 @@ impl CodecConfig {
             enabled,
             http_aware,
             level,
+            window_log,
             pair_ttl_secs,
             flush_interval_ms,
             lru: Arc::new(tokio::sync::OnceCell::new()),
@@ -105,6 +111,7 @@ impl CodecConfig {
                     256,
                     self.dict.clone(),
                     self.level,
+                    self.window_log,
                     self.pair_ttl_secs,
                 )?))
             })
@@ -158,13 +165,9 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         };
 
         // Synchronous handshake before splitting into data tasks.
-        let handshake_result = handshake::exchange_pair_id(
-            &mut quic_send,
-            &mut quic_recv,
-            &lru,
-            stream_timeout_ms,
-        )
-        .await;
+        let handshake_result =
+            handshake::exchange_pair_id(&mut quic_send, &mut quic_recv, &lru, stream_timeout_ms)
+                .await;
 
         let resolved = match handshake_result {
             Ok(r) => r,
@@ -257,8 +260,7 @@ where
 {
     use tokio::io::AsyncReadExt;
 
-    const BUFFER_SIZE: usize = 8192;
-    let mut buf = vec![0u8; BUFFER_SIZE];
+    let mut buf = vec![0u8; crate::STREAM_IO_BUFFER_SIZE];
     let mut http_reader = if http_aware {
         Some(http::HttpMessageReader::new())
     } else {
@@ -375,8 +377,7 @@ where
     use std::io::Write;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const BUFFER_SIZE: usize = 8192;
-    let mut buf = vec![0u8; BUFFER_SIZE];
+    let mut buf = vec![0u8; crate::STREAM_IO_BUFFER_SIZE];
 
     loop {
         let result = tokio::time::timeout(
