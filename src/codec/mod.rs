@@ -301,8 +301,10 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
             // Signal end of stream on the quic send side.
             quic_send.finish().ok();
             match result {
-                Ok(false) => lru_for_s2q.checkin(s2q_id, s2q_pair.clone()),
-                Ok(true) | Err(_) => s2q_pair.mark_errored(),
+                Ok(StreamOutcome::CleanEof) | Ok(StreamOutcome::IoError) => {
+                    lru_for_s2q.checkin(s2q_id, s2q_pair.clone())
+                }
+                Ok(StreamOutcome::Timeout) | Err(_) => s2q_pair.mark_errored(),
             }
             debug!("[{tag}] s2q task done id={index}");
         });
@@ -324,8 +326,10 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
             )
             .await;
             match result {
-                Ok(false) => lru_for_q2s.checkin(q2s_id, q2s_pair.clone()),
-                Ok(true) | Err(_) => q2s_pair.mark_errored(),
+                Ok(StreamOutcome::CleanEof) | Ok(StreamOutcome::IoError) => {
+                    lru_for_q2s.checkin(q2s_id, q2s_pair.clone())
+                }
+                Ok(StreamOutcome::Timeout) | Err(_) => q2s_pair.mark_errored(),
             }
             debug!("[{tag}] q2s task done id={index}");
         });
@@ -362,9 +366,29 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
     });
 }
 
+/// Outcome of a codec stream task.
+///
+/// `CleanEof` — the peer closed the stream cleanly; the pair is safe to reuse.
+/// `Timeout` — the stream timed out; the pair may still be reusable but is
+///   conservatively discarded to avoid stale state.
+/// `IoError` — a local (non-codec) I/O error occurred (e.g. the TCP peer reset
+///   the connection). The zstd encoder/decoder state is intact, so the pair
+///   is safe to reuse.
+///
+/// A zstd codec error is propagated as `Err` (via `?`), which the caller
+/// maps to `mark_errored` — the pair's internal state is corrupt.
+enum StreamOutcome {
+    CleanEof,
+    Timeout,
+    IoError,
+}
+
 /// Run the encoder loop: read from `reader`, compress, write to `writer`.
 ///
-/// Returns `Ok(false)` on clean EOF, `Ok(true)` on timeout.
+/// Returns `Ok(StreamOutcome::CleanEof)` on clean EOF,
+/// `Ok(StreamOutcome::Timeout)` on timeout, `Ok(StreamOutcome::IoError)`
+/// when the local stream (reader/writer) reports an error — the zstd
+/// encoder state is still intact in that case.
 #[allow(clippy::too_many_arguments)]
 async fn run_encoder<R, W>(
     tag: &str,
@@ -375,7 +399,7 @@ async fn run_encoder<R, W>(
     flush_interval: Duration,
     http_aware: bool,
     stats: &CodecStats,
-) -> Result<bool>
+) -> Result<StreamOutcome>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -397,7 +421,7 @@ where
                     if data.is_empty() {
                         // clean EOF
                         flush_encoder(&pair, writer, stats).await?;
-                        return Ok(false);
+                        return Ok(StreamOutcome::CleanEof);
                     }
                     stats.up_raw.fetch_add(data.len() as u64, Ordering::Relaxed);
                     write_compressed(&pair, writer, &data, stats).await?;
@@ -410,7 +434,7 @@ where
                 Ok(http::HttpReadResult::NeedMore) => continue,
                 Err(e) => {
                     warn!("[{tag}] http read failed, err={e}");
-                    return Err(e);
+                    return Ok(StreamOutcome::IoError);
                 }
             }
         } else {
@@ -423,17 +447,17 @@ where
                     match result {
                         Ok(Ok(0)) => {
                             flush_encoder(&pair, writer, stats).await?;
-                            return Ok(false);
+                            return Ok(StreamOutcome::CleanEof);
                         }
                         Ok(Ok(n)) => {
-                        stats.up_raw.fetch_add(n as u64, Ordering::Relaxed);
-                        write_compressed(&pair, writer, &buf[..n], stats).await?;
+                            stats.up_raw.fetch_add(n as u64, Ordering::Relaxed);
+                            write_compressed(&pair, writer, &buf[..n], stats).await?;
                         }
                         Ok(Err(e)) => {
                             warn!("[{tag}] stream read failed, err={e}");
-                            return Err(e.into());
+                            return Ok(StreamOutcome::IoError);
                         }
-                        Err(_) => return Ok(true), // timeout
+                        Err(_) => return Ok(StreamOutcome::Timeout),
                     }
                 }
                 _ = tokio::time::sleep(flush_interval) => {
@@ -500,6 +524,11 @@ where
 }
 
 /// Run the decoder loop: read from `reader`, decompress, write to `writer`.
+///
+/// Returns `Ok(StreamOutcome::CleanEof)` on clean EOF,
+/// `Ok(StreamOutcome::Timeout)` on timeout, `Ok(StreamOutcome::IoError)`
+/// when the local stream (reader/writer) reports an error — the zstd
+/// decoder state is still intact in that case.
 async fn run_decoder<R, W>(
     tag: &str,
     reader: &mut R,
@@ -507,7 +536,7 @@ async fn run_decoder<R, W>(
     pair: std::sync::Arc<crate::codec::lru::CodecPair>,
     stream_timeout_ms: u64,
     stats: &CodecStats,
-) -> Result<bool>
+) -> Result<StreamOutcome>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -538,7 +567,7 @@ where
                     writer.write_all(&produced).await?;
                 }
                 writer.shutdown().await?;
-                return Ok(false);
+                return Ok(StreamOutcome::CleanEof);
             }
             Ok(Ok(n)) => {
                 stats.down_compressed.fetch_add(n as u64, Ordering::Relaxed);
@@ -557,9 +586,9 @@ where
             }
             Ok(Err(e)) => {
                 warn!("[{tag}] quic read failed, err={e}");
-                return Err(e.into());
+                return Ok(StreamOutcome::IoError);
             }
-            Err(_) => return Ok(true), // timeout
+            Err(_) => return Ok(StreamOutcome::Timeout),
         }
     }
 }
