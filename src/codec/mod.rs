@@ -247,6 +247,8 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         let (s2q_pair, q2s_pair) = (resolved.s2q_pair, resolved.q2s_pair);
         let s2q_id = resolved.s2q_id;
         let q2s_id = resolved.q2s_id;
+        let s2q_reused = resolved.s2q_ack != 0;
+        let q2s_reused = resolved.q2s_ack != 0;
         let flush_interval = Duration::from_millis(codec.flush_interval_ms);
         let http_aware = codec.http_aware;
         let stats = Arc::new(CodecStats::default());
@@ -322,7 +324,11 @@ pub fn start_flowing_with_codec<S: AsyncStream>(
         timer_handle.abort();
         let summary = stats.summary();
         info!(
-            "[{tag}] codec stream close id={index}, peer={peer_addr}, {summary}"
+            "[{tag}] codec stream close id={index}, peer={peer_addr}, s2q={}({}), q2s={}({}), {summary}",
+            short_id(s2q_id),
+            if s2q_reused { "reuse" } else { "fresh" },
+            short_id(q2s_id),
+            if q2s_reused { "reuse" } else { "fresh" },
         );
         // Merge per-stream totals into the global aggregator (if attached).
         if let Some(g) = global_stats {
@@ -546,4 +552,9 @@ where
             Err(_) => return Ok(true), // timeout
         }
     }
+}
+
+/// Format the high 32 bits of a pair id as 8 hex digits.
+fn short_id(id: u128) -> String {
+    format!("{:08x}", (id >> 96) as u32)
 }
